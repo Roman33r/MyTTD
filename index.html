@@ -19,9 +19,13 @@ body{background:var(--bg);color:var(--fg);font:14px/1.35 var(--body);display:fle
 #top{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding-block:6px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:var(--panel);border-bottom:1px solid var(--line)}
 #top h1{font:16px var(--display);letter-spacing:.04em;margin:0 6px 0 0;color:var(--accent)}
 .grp{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
-button,select{font:13px var(--body);background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:3px;padding:5px 9px;cursor:pointer}
+button,select,input{font:13px var(--body);background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:3px;padding:5px 9px;cursor:pointer}
+input{cursor:text;min-width:0}
+button:disabled{opacity:.45;cursor:default}
 button:hover{border-color:var(--muted)}
-button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.code{font:22px var(--mono);letter-spacing:.15em;color:var(--accent)}
+.link{font:12px var(--mono);word-break:break-all;color:var(--fg)}
 button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font-weight:700}
 .stat{font:13px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
 .stat b{color:var(--accent);font-weight:400}
@@ -66,11 +70,19 @@ button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font
   <span class="stat">Счёт: <b id="money"></b></span>
   <span class="stat">Кредит: <span id="loan"></span></span>
   <div class="grp"><button id="lplus" title="Взять 10 000 ₽">+</button><button id="lminus" title="Вернуть 10 000 ₽">−</button></div>
-  <div class="grp"><button id="save">Сохранить</button><button id="new">Новая карта</button></div>
+  <div class="grp"><button id="save">Сохранить</button><button id="new">Новая карта</button><button id="netbtn">Сетевая игра</button></div>
 </div>
 <div id="main">
   <div id="wrap"><canvas id="c"></canvas><div id="toast" style="opacity:0"></div></div>
   <aside id="side">
+    <div class="box" id="netbox" hidden>
+      <h2>Сетевая игра</h2>
+      <input id="pname" maxlength="16" placeholder="Ваше имя" aria-label="Ваше имя">
+      <button id="host">Создать комнату</button>
+      <div class="grp"><input id="room" maxlength="5" placeholder="Код" aria-label="Код комнаты" style="width:90px;text-transform:uppercase"><button id="join">Подключиться</button></div>
+      <div class="hint" id="netstat">До 4 игроков на одной карте. У каждого своя компания и свой счёт. Один создаёт комнату и даёт остальным код или ссылку.</div>
+    </div>
+    <div class="box" id="playersbox" hidden><h2>Компании</h2><div id="players"></div></div>
     <div class="box" id="vehopts" hidden>
       <h2>Покупка транспорта</h2>
       <select id="vkind"></select>
@@ -92,6 +104,7 @@ button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font
   </aside>
 </div>
 
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const cv=$('#c'),cx=cv.getContext('2d');
@@ -110,8 +123,18 @@ const COST={road:15,rail:25,st:120,clear:8,tree:10,house:300};
 const TOWN_NAMES=['Новоград','Берёзовка','Ключи','Светлогорск','Озёрск','Каменка','Рябиново','Сосновка','Заречье'];
 const D4=[[1,0],[-1,0],[0,1],[0,-1]];
 
+const CO_COLORS=['#d9443a','#3b7dd8','#3fae5a','#e0b030'];
+
 let S, tool='info', speed=1, sel=null, vA=null, follow=null, hover=-1, floats=[];
 let cam={x:W/2,y:H/2,z:28};
+// me = index of the local player's company; host owns the simulation, clients only send actions
+let me=0;
+const net={role:null,peer:null,conn:null,conns:[],fx:[]};
+const co=p=>S.cos[p];
+const mkCo=(id,name)=>({id,name:name||`Компания ${id+1}`,money:60000,loan:50000,year:{inc:0,exp:0}});
+const esc=s=>String(s).replace(/[&<>"]/g,ch=>`&#${ch.charCodeAt(0)};`);
+function msg(p,s){if(p===me)toast(s);else{const c=net.conns.find(c=>c.slot===p);if(c&&c.open)c.send({t:'toast',s})}}
+function fx(f){floats.push(f);if(net.role==='host')net.fx.push(f)}
 
 const inb=(x,y)=>x>=0&&y>=0&&x<W&&y<H;
 const fmt=n=>Math.round(n).toLocaleString('ru-RU')+' ₽';
@@ -127,8 +150,8 @@ const date=()=>new Date(1950,0,1+S.day);
 // ---------- world generation ----------
 function newGame(seed=Date.now()){
   const r=rng(seed);
-  S={map:new Uint8Array(W*H),own:new Int16Array(W*H).fill(-1),lvl:new Uint8Array(W*H),
-     towns:[],inds:[],sts:[],vs:[],money:60000,loan:50000,day:0,dayF:0,nid:1,year:{inc:0,exp:0}};
+  S={map:new Uint8Array(W*H),own:new Int16Array(W*H).fill(-1),lvl:new Uint8Array(W*H),tco:new Int8Array(W*H).fill(-1),
+     towns:[],inds:[],sts:[],vs:[],cos:[mkCo(0,myName())],day:0,dayF:0,nid:1};
   const n1=noise(r,16),n2=noise(r,5);
   for(let y=0;y<H;y++)for(let x=0;x<W;x++){const w=n1(x,y)*.8+n2(x,y)*.2;
     S.map[y*W+x]=w<.27?WATER:(n2(x,y)>.66||(w>.62&&r()<.5))?TREE:G}
@@ -208,10 +231,13 @@ function monthly(d){
   }
   for(const st of S.sts)st.cargo=st.cargo.map(c=>c*.92);
   townStats();recalcRates();
-  const cost=S.vs.reduce((a,v)=>a+VK[v.kind].run,0)/12+S.loan*.05/12;
-  S.money-=cost;S.year.exp+=cost;
-  if(d.getMonth()===0){for(const v of S.vs){v.lastProfit=v.profit;v.profit=0}toast(`${d.getFullYear()-1} год: доход ${fmt(S.year.inc)}, расходы ${fmt(S.year.exp)}`);S.year={inc:0,exp:0}}
-  if(S.money<-20000)toast('Счёт сильно в минусе! Возьмите кредит или продайте транспорт.');
+  for(const c of S.cos){if(!c)continue;
+    const cost=S.vs.filter(v=>v.p===c.id).reduce((a,v)=>a+VK[v.kind].run,0)/12+c.loan*.05/12;
+    c.money-=cost;c.year.exp+=cost;
+    if(d.getMonth()===0){msg(c.id,`${d.getFullYear()-1} год: доход ${fmt(c.year.inc)}, расходы ${fmt(c.year.exp)}`);c.year={inc:0,exp:0}}
+    if(c.money<-20000)msg(c.id,'Счёт сильно в минусе! Возьмите кредит или продайте транспорт.');
+  }
+  if(d.getMonth()===0)for(const v of S.vs){v.lastProfit=v.profit;v.profit=0}
   save(true);
 }
 
@@ -229,13 +255,20 @@ function findPath(a,b,net){
 }
 function stepVehicle(v,dd){
   const k=VK[v.kind];
+  if(net.role==='client'){ // client only extrapolates motion between host snapshots
+    if(v.state!=='go'||!v.path)return;
+    v.prog+=k.spd*dd;
+    while(v.prog>=1&&v.path.length){v.hist.unshift(v.tile);v.hist.length=Math.min(v.hist.length,4);v.tile=v.path.shift();v.prog-=1}
+    if(!v.path.length)v.prog=0;
+    return;
+  }
   if(v.state==='load'){v.wait-=dd;if(v.wait<=0){v.cur^=1;v.state='go';v.path=null}return}
   const tgt=byId(S.sts,v.ord[v.cur]);
   if(!tgt){v.state='lost';return}
   if(!v.path){
     if(v.state==='lost'&&(v.retry-=dd)>0)return;
     v.path=findPath(v.tile,tgt.y*W+tgt.x,k.net);v.prog=0;
-    if(!v.path){if(v.state!=='lost')toast(`${v.name}: нет пути до ${tgt.name}`);v.state='lost';v.retry=3;return}
+    if(!v.path){if(v.state!=='lost')msg(v.p,`${v.name}: нет пути до ${tgt.name}`);v.state='lost';v.retry=3;return}
     v.state='go';
   }
   v.prog+=k.spd*dd;
@@ -252,8 +285,8 @@ function arrive(v,st){
     const fs=byId(S.sts,v.from),dist=fs?Math.abs(fs.x-st.x)+Math.abs(fs.y-st.y):0;
     const days=S.day-v.loadDay,tf=Math.max(.35,1-Math.max(0,days-dist/k.spd-8)/90);
     const pay=Math.round(v.load*CARGO[v.ct].rate*dist*tf/6);
-    S.money+=pay;S.year.inc+=pay;v.profit+=pay;
-    floats.push({x:st.x+.5,y:st.y,t:0,txt:'+'+fmt(pay)});
+    const c=co(v.p);c.money+=pay;c.year.inc+=pay;v.profit+=pay;
+    fx({x:st.x+.5,y:st.y,t:0,txt:'+'+fmt(pay),p:v.p});
     const town=byId(S.towns,st.town);
     if(v.ct===3&&town)town.goods+=v.load;
     if(v.ct===2)catchment(st,i=>{if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&o.type==='saw'&&v.load){o.stock+=v.load;v.load=0}}});
@@ -270,51 +303,74 @@ function arrive(v,st){
 }
 
 // ---------- building ----------
-function spend(c,i){
-  if(S.money<c){toast('Недостаточно денег');return false}
-  S.money-=c;S.year.exp+=c;
-  if(c>=100)floats.push({x:i%W+.5,y:i/W|0,t:0,txt:'−'+fmt(c),neg:1});
+function spend(c,i,p){
+  const o=co(p);
+  if(o.money<c){msg(p,'Недостаточно денег');return false}
+  o.money-=c;o.year.exp+=c;
+  if(c>=100)fx({x:i%W+.5,y:i/W|0,t:0,txt:'−'+fmt(c),neg:1,p});
   return true;
 }
-function build(i,type){
+const foreign=(i,p)=>S.tco[i]>=0&&S.tco[i]!==p;
+function build(i,type,p){
   const m=S.map[i],other=type===ROAD?RAIL:ROAD;
   if(m===type||m===ST||m===CROSS)return;
-  if(m!==G&&m!==TREE&&m!==other)return toast('Здесь нельзя строить');
-  if(!spend(COST[type===ROAD?'road':'rail']+(m===TREE?COST.tree:0),i))return;
+  if(m!==G&&m!==TREE&&m!==other)return msg(p,'Здесь нельзя строить');
+  if(!spend(COST[type===ROAD?'road':'rail']+(m===TREE?COST.tree:0),i,p))return;
+  if(m!==other)S.tco[i]=p;
   S.map[i]=m===other?CROSS:type;
 }
-function placeStation(i){
+function placeStation(i,p){
   const m=S.map[i];
-  if(![G,TREE,ROAD,RAIL].includes(m))return toast('Станцию можно ставить на пустую землю, дорогу или путь');
-  if(!spend(COST.st,i))return;
+  if(![G,TREE,ROAD,RAIL].includes(m))return msg(p,'Станцию можно ставить на пустую землю, дорогу или путь');
+  if(foreign(i,p))return msg(p,'Это путь другой компании');
+  if(!spend(COST.st,i,p))return;
   const x=i%W,y=i/W|0;
   const town=S.towns.reduce((b,t)=>Math.hypot(t.x-x,t.y-y)<Math.hypot(b.x-x,b.y-y)?t:b);
   const n=S.sts.filter(s=>s.town===town.id).length;
-  const st={id:S.nid++,x,y,town:town.id,name:town.name+(n?'-'+(n+1):''),cargo:[0,0,0,0],rate:[0,0,0,0],served:0};
-  S.sts.push(st);S.map[i]=ST;S.own[i]=st.id;recalcRates();
+  const st={id:S.nid++,p,x,y,town:town.id,name:town.name+(n?'-'+(n+1):''),cargo:[0,0,0,0],rate:[0,0,0,0],served:0};
+  S.sts.push(st);S.map[i]=ST;S.own[i]=st.id;S.tco[i]=p;recalcRates();
 }
-function bulldoze(i){
+function bulldoze(i,p){
   const m=S.map[i];
   if(m===WATER||m===G)return;
-  if(m===IND)return toast('Предприятия снести нельзя');
+  if(m===IND)return msg(p,'Предприятия снести нельзя');
+  if(foreign(i,p))return msg(p,`Это принадлежит компании «${co(S.tco[i])?.name}»`);
   if(m===ST){
     const id=S.own[i];
-    if(S.vs.some(v=>v.ord.includes(id)))return toast('Станцию использует транспорт — сначала продайте его');
-    if(!spend(COST.clear*5,i))return;
+    if(S.vs.some(v=>v.ord.includes(id)))return msg(p,'Станцию использует транспорт — сначала продайте его');
+    if(!spend(COST.clear*5,i,p))return;
     S.sts=S.sts.filter(s=>s.id!==id);recalcRates();if(sel&&sel.id===id)sel=null;
-  }else if(!spend(m===HOUSE?COST.house:m===TREE?COST.tree:COST.clear,i))return;
-  S.map[i]=G;S.own[i]=-1;S.lvl[i]=0;
+  }else if(!spend(m===HOUSE?COST.house:m===TREE?COST.tree:COST.clear,i,p))return;
+  S.map[i]=G;S.own[i]=-1;S.lvl[i]=0;S.tco[i]=-1;
 }
-function buyVehicle(a,b){
-  const kind=$('#vkind').value,k=VK[kind],ct=+$('#vcargo').value;
-  if(!findPath(a.y*W+a.x,b.y*W+b.x,k.net))return toast(`Между станциями нет ${k.net==='rail'?'ж/д пути':'дороги'}`);
-  if(!spend(k.cost,a.y*W+a.x))return;
-  const v={id:S.nid++,kind,ct,name:`${k.n} №${S.vs.length+1}`,ord:[a.id,b.id],cur:0,tile:a.y*W+a.x,hist:[],path:null,prog:0,
+function buyVehicle(aId,bId,kind,ct,p){
+  const a=byId(S.sts,aId),b=byId(S.sts,bId),k=VK[kind];
+  if(!k||!k.cargo.includes(ct)||!a||!b||a===b)return;
+  if(a.p!==p||b.p!==p)return msg(p,'Обе станции должны принадлежать вашей компании');
+  if(!findPath(a.y*W+a.x,b.y*W+b.x,k.net))return msg(p,`Между станциями нет ${k.net==='rail'?'ж/д пути':'дороги'}`);
+  if(!spend(k.cost,a.y*W+a.x,p))return;
+  const v={id:S.nid++,p,kind,ct,name:`${k.n} №${S.vs.filter(v=>v.p===p).length+1}`,ord:[a.id,b.id],cur:0,tile:a.y*W+a.x,hist:[],path:null,prog:0,
            state:'load',wait:0,load:0,from:a.id,loadDay:S.day,profit:0,lastProfit:0};
-  S.vs.push(v);arrive(v,a);sel={t:'v',id:v.id};
-  toast(`Куплен ${v.name}: ${a.name} ⇄ ${b.name}`);
+  S.vs.push(v);arrive(v,a);if(p===me)sel={t:'v',id:v.id};
+  msg(p,`Куплен ${v.name}: ${a.name} ⇄ ${b.name}`);
 }
-function sellVehicle(id){const v=byId(S.vs,id);if(!v)return;S.money+=VK[v.kind].cost*.5;S.vs=S.vs.filter(o=>o!==v);sel=null;if(follow===id)follow=null}
+function sellVehicle(id,p){const v=byId(S.vs,id);if(!v||v.p!==p)return;co(p).money+=VK[v.kind].cost*.5;S.vs=S.vs.filter(o=>o!==v)}
+function loan(d,p){const c=co(p);
+  if(d>0){if(c.loan>=300000)return msg(p,'Максимальный кредит — 300 000 ₽');c.loan+=10000;c.money+=10000}
+  else{if(c.loan<10000)return;if(c.money<10000)return msg(p,'Недостаточно денег для погашения');c.loan-=10000;c.money-=10000}}
+// host-side entry point for every player action; validates input from remote peers
+function doAct(a,p){
+  if(!co(p))return;
+  const i=a.i|0;
+  if(['build','st','bull'].includes(a.a)&&(i<0||i>=W*H))return;
+  if(a.a==='build'&&(a.type===ROAD||a.type===RAIL))build(i,a.type,p);
+  else if(a.a==='st')placeStation(i,p);
+  else if(a.a==='bull')bulldoze(i,p);
+  else if(a.a==='buy')buyVehicle(a.from,a.to,a.kind,a.ct,p);
+  else if(a.a==='sell')sellVehicle(a.id,p);
+  else if(a.a==='loan')loan(a.d,p);
+}
+function send(a){if(net.role==='client'){if(net.conn?.open)net.conn.send({t:'act',a})}else doAct(a,me)}
 
 // ---------- input ----------
 let ptr=null;
@@ -342,14 +398,15 @@ cv.addEventListener('pointerup',e=>{if(ptr&&ptr.pan&&!ptr.moved&&e.button===0)in
 cv.addEventListener('wheel',e=>{e.preventDefault();const[bx,by]=tileXY(e);cam.z=Math.max(8,Math.min(64,cam.z*(e.deltaY<0?1.15:1/1.15)));const[ax,ay]=tileXY(e);cam.x+=bx-ax;cam.y+=by-ay},{passive:false});
 function act(i,p){
   if(i<0)return;p.last=i;
-  if(tool==='road')build(i,ROAD);
-  else if(tool==='rail')build(i,RAIL);
-  else if(tool==='bull')bulldoze(i);
-  else if(tool==='st')placeStation(i);
+  if(tool==='road')send({a:'build',i,type:ROAD});
+  else if(tool==='rail')send({a:'build',i,type:RAIL});
+  else if(tool==='bull')send({a:'bull',i});
+  else if(tool==='st')send({a:'st',i});
   else if(tool==='veh'){
     if(S.map[i]!==ST)return toast('Нажмите на станцию');
     const st=byId(S.sts,S.own[i]);
-    if(!vA)vA=st;else if(vA!==st){buyVehicle(vA,st);vA=null}
+    if(!st||st.p!==me)return toast('Это станция другой компании');
+    if(!vA)vA=st;else if(vA!==st){send({a:'buy',from:vA.id,to:st.id,kind:$('#vkind').value,ct:+$('#vcargo').value});vA=null}
     vehHint();
   }
 }
@@ -364,10 +421,10 @@ function infoClick(e){
 }
 const keys={};
 addEventListener('keydown',e=>{
-  if(e.target.tagName==='SELECT')return;
+  if(e.target.tagName==='SELECT'||e.target.tagName==='INPUT')return;
   keys[e.key.toLowerCase()]=1;
   const n=+e.key;if(n>=1&&n<=6)setTool(['info','road','rail','st','bull','veh'][n-1]);
-  if(e.key===' '){e.preventDefault();setSpeed(speed?0:1)}
+  if(e.key===' '){e.preventDefault();userSpeed(speed?0:1)}
   if(e.key==='Escape'){vA=null;setTool('info')}
 });
 addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
@@ -375,29 +432,118 @@ addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
 function setTool(t){tool=t;vA=null;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));$('#vehopts').hidden=t!=='veh';cv.style.cursor=t==='info'?'grab':'crosshair';vehHint()}
 function setSpeed(s){speed=s;document.querySelectorAll('[data-sp]').forEach(b=>b.classList.toggle('on',+b.dataset.sp===s))}
 $('#tools').onclick=e=>{const t=e.target.dataset.tool;if(t)setTool(t)};
-$('#speed').onclick=e=>{const s=e.target.dataset.sp;if(s!==undefined)setSpeed(+s)};
-$('#lplus').onclick=()=>{if(S.loan>=300000)return toast('Максимальный кредит — 300 000 ₽');S.loan+=10000;S.money+=10000};
-$('#lminus').onclick=()=>{if(S.loan<10000)return;if(S.money<10000)return toast('Недостаточно денег для погашения');S.loan-=10000;S.money-=10000};
-$('#save').onclick=()=>save();
+function userSpeed(s){if(net.role==='client')return toast('Скоростью управляет хозяин комнаты');setSpeed(s)}
+$('#speed').onclick=e=>{const s=e.target.dataset.sp;if(s!==undefined)userSpeed(+s)};
+$('#lplus').onclick=()=>send({a:'loan',d:1});
+$('#lminus').onclick=()=>send({a:'loan',d:-1});
+$('#save').onclick=()=>net.role==='client'?toast('Игру сохраняет хозяин комнаты'):save();
 let newArmed=0;
-$('#new').onclick=()=>{if(Date.now()-newArmed>3000){newArmed=Date.now();$('#new').textContent='Точно? Нажмите ещё';setTimeout(()=>$('#new').textContent='Новая карта',3000);return}
-  $('#new').textContent='Новая карта';newGame();sel=null;follow=null;toast('Новая карта создана')};
+$('#new').onclick=()=>{if(net.role==='client')return toast('Новую карту может создать только хозяин комнаты');
+  if(Date.now()-newArmed>3000){newArmed=Date.now();$('#new').textContent='Точно? Нажмите ещё';setTimeout(()=>$('#new').textContent='Новая карта',3000);return}
+  $('#new').textContent='Новая карта';newGame();sel=null;follow=null;
+  if(net.role==='host'){for(const c of net.conns){S.cos[c.slot]=mkCo(c.slot,c.name);if(c.open)c.send({t:'full',you:c.slot,st:serialize()})}baseline()}
+  toast('Новая карта создана')};
 $('#vkind').innerHTML=Object.entries(VK).map(([k,v])=>`<option value="${k}">${v.n} — ${fmt(v.cost)}, ${v.cap} мест</option>`).join('');
 $('#vkind').onchange=()=>{const k=VK[$('#vkind').value];$('#vcargo').innerHTML=k.cargo.map(c=>`<option value="${c}">${CARGO[c].n}</option>`).join('');vehHint()};
 $('#vkind').onchange();
 function vehHint(){const k=VK[$('#vkind').value];$('#vstep').textContent=vA?`Откуда: ${vA.name}. Теперь нажмите станцию назначения.`:`Нажмите станцию отправления (нужна ${k.net==='rail'?'ж/д':'дорожная'} связь).`}
 $('#info').onclick=e=>{const a=e.target.dataset.act;if(!a||!sel)return;
-  if(a==='sell')sellVehicle(sel.id);if(a==='follow')follow=follow===sel.id?null:sel.id;if(a==='go'){const o=selObj();if(o){cam.x=o.x+.5;cam.y=o.y+.5}}};
+  if(a==='sell'){send({a:'sell',id:sel.id});sel=null}if(a==='follow')follow=follow===sel.id?null:sel.id;if(a==='go'){const o=selObj();if(o){cam.x=o.x+.5;cam.y=o.y+.5}}};
 $('#vlist').onclick=e=>{const r=e.target.closest('[data-v]');if(!r)return;const id=+r.dataset.v;sel={t:'v',id};follow=id};
 
 // ---------- save ----------
-function serialize(){return JSON.stringify({...S,map:Array.from(S.map),own:Array.from(S.own),lvl:Array.from(S.lvl),vs:S.vs.map(v=>({...v,path:null})),cam})}
+function serialize(){return JSON.stringify({...S,map:Array.from(S.map),own:Array.from(S.own),lvl:Array.from(S.lvl),tco:Array.from(S.tco),vs:S.vs.map(v=>({...v,path:null})),cam})}
 function save(quiet){try{localStorage.setItem('magistral-save',serialize());if(!quiet)toast('Игра сохранена')}catch(e){if(!quiet)toast('Сохранение недоступно в этом браузере')}}
 function load(json){
   const o=JSON.parse(json);
-  S={...o,map:new Uint8Array(o.map),own:new Int16Array(o.own),lvl:new Uint8Array(o.lvl)};
-  if(o.cam)cam=o.cam;recalcRates();
+  S={...o,map:new Uint8Array(o.map),own:new Int16Array(o.own),lvl:new Uint8Array(o.lvl),tco:o.tco?new Int8Array(o.tco):new Int8Array(W*H).fill(-1)};
+  if(!S.cos){ // saves from the single-player version
+    S.cos=[{...mkCo(0,myName()),money:o.money,loan:o.loan,year:o.year||{inc:0,exp:0}}];
+    for(const x of[...S.vs,...S.sts])x.p=0;
+  }
+  if(o.cam&&!net.role)cam=o.cam;recalcRates();
 }
+
+// ---------- network (PeerJS / WebRTC) ----------
+const PFX='magistral1950-';
+function myName(){const n=$('#pname').value.trim().slice(0,16);try{if(n)localStorage.setItem('magistral-name',n)}catch(e){}return n||'Игрок'}
+const netStat=h=>$('#netstat').innerHTML=h;
+function netUi(){$('#host').disabled=$('#join').disabled=$('#room').disabled=!!net.peer;$('#playersbox').hidden=!net.role&&S.cos.filter(Boolean).length<2}
+function toastAll(s){toast(s);for(const c of net.conns)if(c.open)c.send({t:'toast',s})}
+function baseline(){net.pm=S.map.slice();net.po=S.own.slice();net.pl=S.lvl.slice();net.pc=S.tco.slice()}
+function hostRoom(){
+  if(net.peer)return;
+  if(!window.Peer)return toast('Сетевая библиотека не загрузилась. Нужен интернет.');
+  const code=Array.from({length:5},()=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.random()*32|0]).join('');
+  const peer=net.peer=new Peer(PFX+code);
+  netStat('Создаю комнату…');netUi();
+  peer.on('open',()=>{
+    net.role='host';co(0).name=myName();baseline();
+    const link=location.href.split('#')[0]+'#'+code;
+    netStat(`Код комнаты: <span class="code">${code}</span><br>Ссылка для друзей:<br><span class="link">${esc(link)}</span><br><button id="copylink">Скопировать ссылку</button>`);
+    $('#copylink').onclick=()=>navigator.clipboard?.writeText(link).then(()=>toast('Ссылка скопирована'),()=>toast('Скопируйте ссылку вручную'));
+    netUi();
+  });
+  peer.on('connection',c=>{
+    c.on('open',()=>{
+      const slot=[1,2,3].find(k=>!net.conns.some(x=>x.slot===k));
+      if(!slot){c.send({t:'err',s:'Комната заполнена: уже 4 игрока'});setTimeout(()=>c.close(),500);return}
+      c.slot=slot;c.name=String(c.metadata?.name||'').slice(0,16)||`Компания ${slot+1}`;net.conns.push(c);
+      // a returning slot keeps the company it left behind
+      if(!S.cos[slot])S.cos[slot]=mkCo(slot,c.name);else S.cos[slot].name=c.name;
+      c.send({t:'full',you:slot,st:serialize()});
+      toastAll(`${c.name} в игре`);netUi();
+    });
+    c.on('data',d=>{if(c.slot&&d&&d.t==='act'&&d.a)doAct(d.a,c.slot)});
+    c.on('close',()=>{net.conns=net.conns.filter(x=>x!==c);if(c.slot)toastAll(`${c.name} отключился`);netUi()});
+  });
+  peer.on('error',e=>{netStat('Ошибка сети: '+esc(e.type));if(!net.role){peer.destroy();net.peer=null;netUi()}});
+}
+function joinRoom(code){
+  code=code.trim().toUpperCase();
+  if(!/^[A-Z0-9]{5}$/.test(code))return toast('Код комнаты — 5 букв или цифр');
+  if(net.peer)return;
+  if(!window.Peer)return toast('Сетевая библиотека не загрузилась. Нужен интернет.');
+  const peer=net.peer=new Peer();
+  netStat('Подключаюсь…');netUi();
+  peer.on('open',()=>{
+    const c=net.conn=peer.connect(PFX+code,{reliable:true,metadata:{name:myName()}});
+    c.on('data',onHostData);
+    c.on('close',()=>{if(net.role==='client'){net.role=null;toast('Связь с хозяином комнаты потеряна. Карта осталась у вас, игра идёт без сети.');netStat('Отключено.');netUi()}});
+  });
+  peer.on('error',e=>{netStat(e.type==='peer-unavailable'?'Комната не найдена. Проверьте код.':'Ошибка сети: '+esc(e.type));if(net.role!=='client'){peer.destroy();net.peer=null;netUi()}});
+}
+function onHostData(d){
+  if(!d)return;
+  if(d.t==='full'){
+    const first=net.role!=='client';net.role='client';me=d.you;load(d.st);
+    if(first){const o=JSON.parse(d.st).cam;if(o)cam=o}
+    sel=null;follow=null;vA=null;
+    netStat(`Вы в комнате как «${esc(co(me).name)}». Ваш цвет — <span class="chip" style="background:${CO_COLORS[me]}"></span>`);netUi();
+    toast('Подключено! Стройте свои станции и маршруты.');
+  }else if(d.t==='tick'&&net.role==='client'){
+    Object.assign(S,{day:d.day,dayF:d.dayF,cos:d.cos,sts:d.sts,vs:d.vs,towns:d.towns,inds:d.inds});
+    const t=d.tiles;for(let k=0;k<t.length;k+=5){const i=t[k];S.map[i]=t[k+1];S.own[i]=t[k+2];S.lvl[i]=t[k+3];S.tco[i]=t[k+4]}
+    for(const f of d.fx)if(f.p===me)floats.push({...f,t:0});
+    if(d.speed!==speed)setSpeed(d.speed);
+  }else if(d.t==='toast')toast(d.s);
+  else if(d.t==='err'){toast(d.s);netStat(esc(d.s))}
+}
+// host → clients: changed tiles since last send plus the small dynamic state
+function broadcast(){
+  if(net.role!=='host'||!net.conns.length){net.fx=[];return}
+  const tiles=[];
+  for(let i=0;i<W*H;i++)if(S.map[i]!==net.pm[i]||S.own[i]!==net.po[i]||S.lvl[i]!==net.pl[i]||S.tco[i]!==net.pc[i]){
+    tiles.push(i,S.map[i],S.own[i],S.lvl[i],S.tco[i]);net.pm[i]=S.map[i];net.po[i]=S.own[i];net.pl[i]=S.lvl[i];net.pc[i]=S.tco[i]}
+  const m={t:'tick',day:S.day,dayF:S.dayF,speed,cos:S.cos,sts:S.sts,vs:S.vs,towns:S.towns,inds:S.inds,tiles,fx:net.fx};
+  net.fx=[];
+  for(const c of net.conns)if(c.open)c.send(m);
+}
+setInterval(broadcast,200);
+$('#netbtn').onclick=()=>{$('#netbox').hidden=!$('#netbox').hidden};
+$('#host').onclick=hostRoom;
+$('#join').onclick=()=>joinRoom($('#room').value);
+$('#room').onkeydown=e=>{if(e.key==='Enter')joinRoom($('#room').value)};
 
 // ---------- rendering ----------
 const GRASS=['#5d8f3e','#5a8b3b','#61933f'],ROOF=['#b4412f','#8e5a3c','#5f6e7c','#b0782a','#7b3f61'];
@@ -447,7 +593,7 @@ function drawTile(i,sx,sy,ts){
     const rc=conn(i,[ROAD,CROSS]),tc=conn(i,[RAIL,CROSS]);
     if(rc.some(Boolean))drawRoad(sx,sy,ts,rc);if(tc.some(Boolean))drawRail(sx,sy,ts,tc);
     const o=ts*.14;cx.fillStyle='#b9b6ad';cx.fillRect(sx+o,sy+o,ts-2*o,ts-2*o);
-    cx.fillStyle='#3e5f8a';cx.fillRect(sx+o,sy+o,ts-2*o,ts*.22);
+    cx.fillStyle=CO_COLORS[byId(S.sts,S.own[i])?.p??0];cx.fillRect(sx+o,sy+o,ts-2*o,ts*.22);
     cx.strokeStyle='#2a2f35';cx.lineWidth=1;cx.strokeRect(sx+o+.5,sy+o+.5,ts-2*o-1,ts-2*o-1);
   }
   else if(m===HOUSE){
@@ -459,11 +605,12 @@ function drawTile(i,sx,sy,ts){
   }
   else if(m===IND){const o=byId(S.inds,S.own[i]);cx.fillStyle=o?IT[o.type].c:'#555';cx.fillRect(sx,sy,ts+.5,ts+.5)}
 }
-function drawCar(x,y,dx,dy,len,wid,col,off){
+function drawCar(x,y,dx,dy,len,wid,col,off,inner){
   const a=Math.atan2(dy,dx),ts=cam.z;
   cx.save();cx.translate(x-Math.sin(a)*off*ts,y+Math.cos(a)*off*ts);cx.rotate(a);
   cx.fillStyle='rgba(0,0,0,.3)';cx.fillRect(-len*ts/2+1.5,-wid*ts/2+1.5,len*ts,wid*ts);
   cx.fillStyle=col;cx.fillRect(-len*ts/2,-wid*ts/2,len*ts,wid*ts);
+  if(inner){cx.fillStyle=inner;cx.fillRect(-len*ts*.38,-wid*ts*.28,len*ts*.4,wid*ts*.56)}
   cx.fillStyle='rgba(255,255,255,.55)';cx.fillRect(len*ts/2-len*ts*.22,-wid*ts/2+1,len*ts*.15,wid*ts-2);
   cx.restore();
 }
@@ -492,8 +639,8 @@ function draw(){
   // vehicles
   for(const v of S.vs){
     const p=vpos(v),pts=[[p.x,p.y],[v.tile%W+.5,(v.tile/W|0)+.5],...v.hist.map(t=>[t%W+.5,(t/W|0)+.5])];
-    if(v.kind==='train'){for(let k=3;k>=0;k--){const[x,y,dx,dy]=along(pts,k*.52);drawCar(sx(x),sy(y),dx||1,dy,.48,.3,k?CARGO[v.ct].c:'#b8322a',0)}}
-    else{const[x,y,dx,dy]=along(pts,0);drawCar(sx(x),sy(y),dx||1,dy,.42,.24,v.kind==='bus'?'#e8b92f':CARGO[v.ct].c,.13)}
+    if(v.kind==='train'){for(let k=3;k>=0;k--){const[x,y,dx,dy]=along(pts,k*.52);drawCar(sx(x),sy(y),dx||1,dy,.48,.3,k?CARGO[v.ct].c:CO_COLORS[v.p??0],0)}}
+    else{const[x,y,dx,dy]=along(pts,0);drawCar(sx(x),sy(y),dx||1,dy,.42,.24,CO_COLORS[v.p??0],.13,CARGO[v.ct].c)}
     if(sel&&sel.t==='v'&&sel.id===v.id){cx.strokeStyle='#fff';cx.lineWidth=2;cx.beginPath();cx.arc(sx(p.x),sy(p.y),ts*.55,0,7);cx.stroke()}
   }
   // labels
@@ -501,7 +648,7 @@ function draw(){
   for(const st of S.sts){if(ts<16)break;cx.font=`${Math.max(10,ts*.34)}px ${font}`;label(st.name,sx(st.x+.5),sy(st.y)-ts*.15,'#bcd3f0')}
   for(const t of S.towns){cx.font=`${Math.max(12,ts*.5)}px "Russo One",${font}`;label(`${t.name} · ${t.pop}`,sx(t.x+.5),sy(t.y-1.2),'#fff6dc')}
   if(hover>=0&&!ptr?.pan){cx.strokeStyle='rgba(255,255,255,.8)';cx.lineWidth=1.5;cx.strokeRect(sx(hover%W)+.5,sy(hover/W|0)+.5,ts-1,ts-1)}
-  for(const f of floats){cx.globalAlpha=Math.max(0,1-f.t/2);cx.font=`700 ${Math.max(11,ts*.42)}px ${font}`;cx.fillStyle=f.neg?'#ff9384':'#a6f08f';cx.fillText(f.txt,sx(f.x),sy(f.y)-f.t*ts*.6);cx.globalAlpha=1}
+  for(const f of floats){if(f.p!==undefined&&f.p!==me)continue;cx.globalAlpha=Math.max(0,1-f.t/2);cx.font=`700 ${Math.max(11,ts*.42)}px ${font}`;cx.fillStyle=f.neg?'#ff9384':'#a6f08f';cx.fillText(f.txt,sx(f.x),sy(f.y)-f.t*ts*.6);cx.globalAlpha=1}
 }
 function label(txt,x,y,col){const w=cx.measureText(txt).width+10,hh=parseFloat(cx.font.match(/(\d+(\.\d+)?)px/)[1])+6;
   cx.fillStyle='rgba(18,22,26,.72)';cx.fillRect(x-w/2,y-hh/2,w,hh);cx.fillStyle=col;cx.fillText(txt,x,y+1)}
@@ -516,11 +663,13 @@ function infoHtml(){
   if(!sel)return 'Нажмите на станцию, город, предприятие или машину.';
   if(sel.t==='v'){const v=byId(S.vs,sel.id);if(!v)return'—';const a=byId(S.sts,v.ord[0]),b=byId(S.sts,v.ord[1]),k=VK[v.kind];
     const st={go:'в пути к '+(byId(S.sts,v.ord[v.cur])||{}).name,load:'погрузка',lost:'⚠ нет пути'}[v.state];
+    const owner=row('Владелец',`<span class="chip" style="background:${CO_COLORS[v.p]}"></span>${esc(co(v.p)?.name)}`);
+    if(v.p!==me)return `<div class="title">${v.name}</div>`+owner+row('Маршрут',`${a?.name} ⇄ ${b?.name}`)+row('Груз',CARGO[v.ct].n);
     return `<div class="title">${v.name}</div>`+row('Маршрут',`${a?.name} ⇄ ${b?.name}`)+row('Груз',`<span class="chip" style="background:${CARGO[v.ct].c}"></span>${CARGO[v.ct].n}`)+
       row('Загрузка',`${v.load} / ${k.cap}`)+row('Состояние',st)+row('Прибыль в этом году',fmt(v.profit),v.profit>=0?'pos':'neg')+row('В прошлом году',fmt(v.lastProfit))+row('Содержание',fmt(k.run)+'/год')+
       `<div class="grp"><button data-act="follow">${follow===v.id?'Не следить':'Следить'}</button><button data-act="sell">Продать за ${fmt(k.cost/2)}</button></div>`}
   if(sel.t==='st'){const s=byId(S.sts,sel.id);if(!s)return'—';
-    return `<div class="title">Станция «${s.name}»</div>`+CARGO.map((c,i)=>row(`<span class="chip" style="background:${c.c}"></span>${c.n}`,`${Math.floor(s.cargo[i])} ждут · ${Math.round(s.rate[i]*30)}/мес · ${accepts(s,i)?'принимает':'—'}`)).join('')+
+    return `<div class="title">Станция «${s.name}»</div>`+row('Владелец',`<span class="chip" style="background:${CO_COLORS[s.p]}"></span>${esc(co(s.p)?.name)}`)+CARGO.map((c,i)=>row(`<span class="chip" style="background:${c.c}"></span>${c.n}`,`${Math.floor(s.cargo[i])} ждут · ${Math.round(s.rate[i]*30)}/мес · ${accepts(s,i)?'принимает':'—'}`)).join('')+
       `<div>Транспорта на маршрутах: ${S.vs.filter(v=>v.ord.includes(s.id)).length}</div>`}
   if(sel.t==='town'){const t=byId(S.towns,sel.id);if(!t)return'—';
     return `<div class="title">${t.name}</div>`+row('Население',t.pop)+row('Домов',t.houses)+row('Пассажиров вывезено (прошл. мес.)',t.lastPass)+row('Товаров доставлено (прошл. мес.)',t.lastGoods)+
@@ -529,24 +678,34 @@ function infoHtml(){
     return `<div class="title">${it.n}</div>`+(it.prod!==undefined?row('Производит',`${CARGO[it.prod].n}: ${o.prod}/мес`):'')+
       (it.acc.length?row('Принимает',it.acc.map(c=>CARGO[c].n).join(', ')):'')+(o.type==='saw'?row('Сырья в этом месяце',o.stock):'')+`<button data-act="go">Показать</button>`}
 }
-let lastInfo='',lastList='';
+let lastInfo='',lastList='',lastPl='';
 function panels(){
+  const c=co(me)||mkCo(me);
   $('#date').textContent=date().toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
-  $('#money').textContent=fmt(S.money);$('#money').style.color=S.money<0?'var(--bad)':'';
-  $('#loan').textContent=fmt(S.loan);
+  $('#money').textContent=fmt(c.money);$('#money').style.color=c.money<0?'var(--bad)':'';
+  $('#loan').textContent=fmt(c.loan);
   const ih=infoHtml();if(ih!==lastInfo){$('#info').innerHTML=ih;lastInfo=ih}
-  const lh=S.vs.length?S.vs.map(v=>`<div class="vrow" data-v="${v.id}"><span><span class="chip" style="background:${CARGO[v.ct].c}"></span>${v.name}${v.state==='lost'?' ⚠':''}</span><span class="${v.profit>=0?'pos':'neg'}">${fmt(v.profit)}</span></div>`).join(''):'Пока ничего. Постройте две станции и купите автобус.';
+  const pl=S.cos.filter(Boolean).map(o=>`<div class="row"><span><span class="chip" style="background:${CO_COLORS[o.id]}"></span>${esc(o.name)}${o.id===me?' (вы)':''} · ${S.vs.filter(v=>v.p===o.id).length} ед.</span><span class="${o.money>=0?'pos':'neg'}">${fmt(o.money)}</span></div>`).join('');
+  if(pl!==lastPl){$('#players').innerHTML=pl;lastPl=pl;netUi()}
+  const mine=S.vs.filter(v=>v.p===me);
+  const lh=mine.length?mine.map(v=>`<div class="vrow" data-v="${v.id}"><span><span class="chip" style="background:${CARGO[v.ct].c}"></span>${v.name}${v.state==='lost'?' ⚠':''}</span><span class="${v.profit>=0?'pos':'neg'}">${fmt(v.profit)}</span></div>`).join(''):'Пока ничего. Постройте две станции и купите автобус.';
   if(lh!==lastList){$('#vlist').innerHTML=lh;lastList=lh}
 }
 
 // ---------- loop ----------
+// simulation runs on a timer, not rAF, so a host in a background tab keeps the shared world going (browsers throttle it to ~1/s)
+let simLast=performance.now();
+setInterval(()=>{
+  const now=performance.now(),dd=Math.min(1100,now-simLast)/DAY_MS*SPEEDS[speed];simLast=now;
+  if(!S||dd<=0)return;
+  for(const v of S.vs)stepVehicle(v,dd);
+  if(net.role!=='client'){S.dayF+=dd;while(S.dayF>=1){S.dayF-=1;daily()}}
+},30);
 let last=performance.now(),panelT=0;
 function loop(now){
   const dt=Math.min(100,now-last);last=now;
   const pan=12*dt/1000*28/cam.z*2;
   if(keys.w||keys.arrowup)cam.y-=pan;if(keys.s||keys.arrowdown)cam.y+=pan;if(keys.a||keys.arrowleft)cam.x-=pan;if(keys.d||keys.arrowright)cam.x+=pan;
-  const dd=dt/DAY_MS*SPEEDS[speed];
-  if(dd>0){for(const v of S.vs)stepVehicle(v,dd);S.dayF+=dd;while(S.dayF>=1){S.dayF-=1;daily()}}
   if(follow){const v=byId(S.vs,follow);if(v){const p=vpos(v);cam.x=p.x;cam.y=p.y}else follow=null}
   for(const f of floats)f.t+=dt/1000;floats=floats.filter(f=>f.t<2);
   draw();
@@ -559,11 +718,15 @@ function loop(now){
   console.assert(findPath(0,4,'road')?.length===4,'road path');console.assert(findPath(0,4,'rail')===null,'rail blocked');S=keep})();
 
 function start(data){
+  try{$('#pname').value=localStorage.getItem('magistral-name')||''}catch(e){}
   try{const s=data?.save||localStorage.getItem('magistral-save');if(s){load(s);toast('Сохранённая игра загружена')}else newGame()}catch(e){newGame()}
   if(!S)newGame();
   window.claude?.hot?.snapshot?.(()=>({save:serialize()}));
   resize();setTool('info');setSpeed(1);requestAnimationFrame(loop);
   if(!S.vs.length)toast('Добро пожаловать! Постройте две станции у городов, соедините дорогой и купите автобус.');
+  netUi();
+  const code=location.hash.slice(1).toUpperCase();
+  if(/^[A-Z0-9]{5}$/.test(code)){$('#netbox').hidden=false;$('#room').value=code;joinRoom(code)}
 }
 window.claude?.hot?.ready?window.claude.hot.ready(start):start(window.claude?.hot?.data??{});
 </script>
