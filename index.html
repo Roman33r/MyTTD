@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="ru">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<title>Магистраль-1950</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Russo+One&family=PT+Sans:wght@400;700&family=PT+Mono&display=swap">
+<style>
+/* Layout: one-screen app — toolbar strip on top, map canvas, control panel on the right (below on phones) */
+:root{
+  --bg:#1b2026; --panel:#252c33; --panel2:#2e363e; --line:#3b4650; --fg:#ece6d6; --muted:#9aa6ae;
+  --accent:#e3a93b; --good:#7cc86b; --bad:#e2675a;
+  --display:"Russo One",Impact,sans-serif; --body:"PT Sans",system-ui,sans-serif; --mono:"PT Mono",ui-monospace,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font:14px/1.35 var(--body);display:flex;flex-direction:column;overflow:hidden}
+#top{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding-block:6px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:var(--panel);border-bottom:1px solid var(--line)}
+#top h1{font:16px var(--display);letter-spacing:.04em;margin:0 6px 0 0;color:var(--accent)}
+.grp{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+button,select{font:13px var(--body);background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:3px;padding:5px 9px;cursor:pointer}
+button:hover{border-color:var(--muted)}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font-weight:700}
+.stat{font:13px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat b{color:var(--accent);font-weight:400}
+#main{flex:1;display:flex;min-height:0}
+#wrap{flex:1;position:relative;min-width:0}
+#c{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+#toast{position:absolute;left:12px;bottom:12px;max-width:min(520px,80%);background:rgba(20,24,28,.88);border-left:3px solid var(--accent);padding:6px 10px;font-size:13px;pointer-events:none;transition:opacity .4s}
+#side{width:290px;flex-shrink:0;background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:12px}
+#side h2{font:12px var(--display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+.box{display:flex;flex-direction:column;gap:6px}
+.row{display:flex;justify-content:space-between;gap:8px;font-variant-numeric:tabular-nums}
+.row span:first-child{color:var(--muted)}
+.vrow{display:flex;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:3px;cursor:pointer;font-size:13px;font-variant-numeric:tabular-nums}
+.vrow:hover{background:var(--panel2)}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+.hint{color:var(--muted);font-size:12.5px}
+.hint li{margin-bottom:3px}
+.hint ul{margin:0;padding-left:18px}
+.title{font:15px var(--display);color:var(--fg)}
+.chip{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+@media (max-width:760px){
+  #main{flex-direction:column}
+  #side{width:auto;height:38%;border-left:0;border-top:1px solid var(--line)}
+}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+</style>
+
+<div id="top">
+  <h1>МАГИСТРАЛЬ-1950</h1>
+  <div class="grp" id="tools">
+    <button data-tool="info" title="1">Инфо</button>
+    <button data-tool="road" title="2">Дорога</button>
+    <button data-tool="rail" title="3">Ж/д путь</button>
+    <button data-tool="st" title="4">Станция</button>
+    <button data-tool="bull" title="5">Снос</button>
+    <button data-tool="veh" title="6">Транспорт</button>
+  </div>
+  <div class="grp" id="speed">
+    <button data-sp="0" title="Пробел">❚❚</button><button data-sp="1">▶</button><button data-sp="2">▶▶</button><button data-sp="3">▶▶▶</button>
+  </div>
+  <span class="stat" id="date"></span>
+  <span class="stat">Счёт: <b id="money"></b></span>
+  <span class="stat">Кредит: <span id="loan"></span></span>
+  <div class="grp"><button id="lplus" title="Взять 10 000 ₽">+</button><button id="lminus" title="Вернуть 10 000 ₽">−</button></div>
+  <div class="grp"><button id="save">Сохранить</button><button id="new">Новая карта</button></div>
+</div>
+<div id="main">
+  <div id="wrap"><canvas id="c"></canvas><div id="toast" style="opacity:0"></div></div>
+  <aside id="side">
+    <div class="box" id="vehopts" hidden>
+      <h2>Покупка транспорта</h2>
+      <select id="vkind"></select>
+      <select id="vcargo"></select>
+      <div class="hint" id="vstep"></div>
+    </div>
+    <div class="box"><h2>Выбрано</h2><div id="info" class="hint">Нажмите на станцию, город, предприятие или машину.</div></div>
+    <div class="box"><h2>Ваш транспорт</h2><div id="vlist" class="hint">Пока ничего. Постройте две станции и купите автобус.</div></div>
+    <div class="box hint">
+      <h2>Как играть</h2>
+      <ul>
+        <li>Перетаскивание или ПКМ — двигать карту, колесо — масштаб, WASD — тоже двигать.</li>
+        <li>Дороги и пути тянутся мышью. Станция собирает грузы в радиусе 3 клеток (подсветка).</li>
+        <li>Груз появляется на станции только после первого визита транспорта за ним.</li>
+        <li>Цепочки: шахта → электростанция, лесозаготовка → лесопилка → товары в город. Пассажиры — между городами.</li>
+        <li>Доход растёт с расстоянием и падает от долгой дороги. Обслуживаемые города растут быстрее.</li>
+      </ul>
+    </div>
+  </aside>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const cv=$('#c'),cx=cv.getContext('2d');
+const W=96,H=96,R=3,DAY_MS=700,SPEEDS=[0,1,2,4];
+const G=0,WATER=1,TREE=2,ROAD=3,RAIL=4,ST=5,HOUSE=6,IND=7,CROSS=8;
+const HP=[0,8,20,45];
+const CARGO=[{n:'Пассажиры',rate:3.2,c:'#f2cf55'},{n:'Уголь',rate:4.5,c:'#2a2a2a'},{n:'Древесина',rate:4,c:'#9a6431'},{n:'Товары',rate:7,c:'#e07a5f'}];
+const VK={bus:{n:'Автобус',cost:1500,run:350,cap:30,spd:2.6,net:'road',cargo:[0]},
+          truck:{n:'Грузовик',cost:2200,run:450,cap:20,spd:2.2,net:'road',cargo:[1,2,3]},
+          train:{n:'Поезд',cost:9000,run:1600,cap:90,spd:4.5,net:'rail',cargo:[0,1,2,3]}};
+const IT={coal:{n:'Угольная шахта',c:'#3d3a38',e:'⛏️',prod:1,base:45,acc:[]},
+          power:{n:'Электростанция',c:'#8a5a2b',e:'⚡',acc:[1]},
+          forest:{n:'Лесозаготовка',c:'#2b5226',e:'🌲',prod:2,base:40,acc:[]},
+          saw:{n:'Лесопилка',c:'#93582c',e:'🪚',prod:3,acc:[2]}};
+const COST={road:15,rail:25,st:120,clear:8,tree:10,house:300};
+const TOWN_NAMES=['Новоград','Берёзовка','Ключи','Светлогорск','Озёрск','Каменка','Рябиново','Сосновка','Заречье'];
+const D4=[[1,0],[-1,0],[0,1],[0,-1]];
+
+let S, tool='info', speed=1, sel=null, vA=null, follow=null, hover=-1, floats=[];
+let cam={x:W/2,y:H/2,z:28};
+
+const inb=(x,y)=>x>=0&&y>=0&&x<W&&y<H;
+const fmt=n=>Math.round(n).toLocaleString('ru-RU')+' ₽';
+function nb(i){const x=i%W,y=i/W|0,o=[];for(const[dx,dy]of D4){const nx=x+dx,ny=y+dy;if(inb(nx,ny))o.push(ny*W+nx)}return o}
+function rng(a){return()=>{a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function noise(r,sc){const gw=Math.ceil(W/sc)+2,g=[];for(let i=0;i<gw*gw;i++)g.push(r());const s=t=>t*t*(3-2*t);
+  return(x,y)=>{const fx=x/sc,fy=y/sc,ix=fx|0,iy=fy|0,u=s(fx-ix),v=s(fy-iy),a=g[iy*gw+ix],b=g[iy*gw+ix+1],c=g[(iy+1)*gw+ix],d=g[(iy+1)*gw+ix+1];return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v}}
+const hash=(x,y)=>{let h=x*374761393+y*668265263;h=(h^h>>>13)*1274126177;return(h^h>>>16)>>>0};
+const land=i=>S.map[i]===G||S.map[i]===TREE;
+const byId=(arr,id)=>arr.find(o=>o.id===id);
+const date=()=>new Date(1950,0,1+S.day);
+
+// ---------- world generation ----------
+function newGame(seed=Date.now()){
+  const r=rng(seed);
+  S={map:new Uint8Array(W*H),own:new Int16Array(W*H).fill(-1),lvl:new Uint8Array(W*H),
+     towns:[],inds:[],sts:[],vs:[],money:60000,loan:50000,day:0,dayF:0,nid:1,year:{inc:0,exp:0}};
+  const n1=noise(r,16),n2=noise(r,5);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){const w=n1(x,y)*.8+n2(x,y)*.2;
+    S.map[y*W+x]=w<.27?WATER:(n2(x,y)>.66||(w>.62&&r()<.5))?TREE:G}
+  const names=TOWN_NAMES.slice().sort(()=>r()-.5);
+  for(let tries=0;S.towns.length<6&&tries<500;tries++){
+    const x=6+(r()*(W-12)|0),y=6+(r()*(H-12)|0);
+    if(!land(y*W+x)||S.towns.some(t=>Math.abs(t.x-x)+Math.abs(t.y-y)<22))continue;
+    const t={id:S.nid++,name:names[S.towns.length],x,y,pop:0,houses:0,rad:4,pass:0,goods:0,lastPass:0,lastGoods:0};
+    S.towns.push(t);
+    for(const[dx,dy]of[[0,0],...D4.flatMap(([a,b])=>[1,2,3].map(k=>[a*k,b*k]))]){const i=(y+dy)*W+x+dx;if(land(i))S.map[i]=ROAD}
+    for(let k=0;k<30;k++)growTown(t);
+  }
+  for(const[type,n]of[['coal',3],['power',2],['forest',3],['saw',2]])for(let k=0,tries=0;k<n&&tries<800;tries++){
+    const x=2+(r()*(W-5)|0),y=2+(r()*(H-5)|0),tiles=[0,1,W,W+1].map(o=>y*W+x+o);
+    if(!tiles.every(land)||S.towns.some(t=>Math.abs(t.x-x)+Math.abs(t.y-y)<9)||S.inds.some(o=>Math.abs(o.x-x)+Math.abs(o.y-y)<8))continue;
+    const ind={id:S.nid++,type,x,y,prod:IT[type].base||0,stock:0};
+    for(const i of tiles){S.map[i]=IND;S.own[i]=ind.id}
+    S.inds.push(ind);k++;
+  }
+  townStats();recalcRates();
+  const t=S.towns[0];cam.x=t.x+.5;cam.y=t.y+.5;
+}
+
+function growTown(t){
+  const rad=Math.round(t.rad);
+  for(let k=0;k<30;k++){
+    const x=t.x+Math.round((Math.random()*2-1)*rad),y=t.y+Math.round((Math.random()*2-1)*rad);
+    if(!inb(x,y))continue;const i=y*W+x,m=S.map[i];
+    if(m===HOUSE&&S.own[i]===t.id){if(S.lvl[i]<3&&Math.random()<.2){S.lvl[i]++;return}continue}
+    if(!land(i))continue;
+    const roads=nb(i).filter(j=>S.map[j]===ROAD).length;
+    if(!roads)continue;
+    if(Math.random()<.75){S.map[i]=HOUSE;S.own[i]=t.id;S.lvl[i]=1;return}
+    if(roads===1){S.map[i]=ROAD;return}
+  }
+}
+
+function townStats(){
+  for(const t of S.towns){t.pop=0;t.houses=0}
+  for(let i=0;i<W*H;i++)if(S.map[i]===HOUSE){const t=byId(S.towns,S.own[i]);if(t){t.pop+=HP[S.lvl[i]];t.houses++}}
+  for(const t of S.towns)t.rad=Math.min(14,4+Math.sqrt(t.houses)*.9);
+}
+
+// ---------- stations & cargo ----------
+function catchment(st,f){for(let y=st.y-R;y<=st.y+R;y++)for(let x=st.x-R;x<=st.x+R;x++)if(inb(x,y))f(y*W+x)}
+function accepts(st,ct){
+  let houses=0,ok=false;
+  catchment(st,i=>{if(S.map[i]===HOUSE)houses++;else if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&IT[o.type].acc.includes(ct))ok=true}});
+  return ok||(ct===0&&houses>0)||(ct===3&&houses>=4);
+}
+// daily cargo per station; sources covered by several served stations split evenly
+function recalcRates(){
+  const cov=new Array(W*H);
+  for(const st of S.sts){st.rate=[0,0,0,0];catchment(st,i=>(cov[i]||(cov[i]=[])).push(st))}
+  for(let i=0;i<W*H;i++)if(S.map[i]===HOUSE&&cov[i]){const l=cov[i].filter(s=>s.served&1);for(const s of l)s.rate[0]+=HP[S.lvl[i]]/3/30/l.length}
+  for(const o of S.inds){const ct=IT[o.type].prod;if(ct===undefined)continue;const set=new Set();
+    for(const k of[0,1,W,W+1])for(const s of cov[o.y*W+o.x+k]||[])if(s.served&(1<<ct))set.add(s);
+    for(const s of set)s.rate[ct]+=o.prod/30/set.size}
+}
+
+function daily(){
+  S.day++;
+  for(const st of S.sts)for(let c=0;c<4;c++)st.cargo[c]=Math.min(3000,st.cargo[c]+st.rate[c]);
+  const d=date();
+  if(d.getDate()===1)monthly(d);
+}
+function monthly(d){
+  for(const t of S.towns){
+    t.lastPass=t.pass;t.lastGoods=t.goods;
+    const rate=.25+Math.min(1,t.pass/(t.pop/6+1))*.9+(t.goods>0?.5:0);
+    for(let k=Math.floor(rate*2+Math.random());k>0;k--)growTown(t);
+    t.pass=0;t.goods=0;
+  }
+  for(const o of S.inds){
+    if(o.type==='saw'){o.prod=Math.round(o.stock*.9);o.stock=0}
+    else if(IT[o.type].base)o.prod=Math.round(IT[o.type].base*(.75+Math.random()*.5));
+  }
+  for(const st of S.sts)st.cargo=st.cargo.map(c=>c*.92);
+  townStats();recalcRates();
+  const cost=S.vs.reduce((a,v)=>a+VK[v.kind].run,0)/12+S.loan*.05/12;
+  S.money-=cost;S.year.exp+=cost;
+  if(d.getMonth()===0){for(const v of S.vs){v.lastProfit=v.profit;v.profit=0}toast(`${d.getFullYear()-1} год: доход ${fmt(S.year.inc)}, расходы ${fmt(S.year.exp)}`);S.year={inc:0,exp:0}}
+  if(S.money<-20000)toast('Счёт сильно в минусе! Возьмите кредит или продайте транспорт.');
+  save(true);
+}
+
+// ---------- vehicles ----------
+function passable(i,net){const m=S.map[i];return m===ST||m===CROSS||m===(net==='rail'?RAIL:ROAD)}
+function findPath(a,b,net){
+  if(a===b)return[];
+  const prev=new Int32Array(W*H).fill(-1),q=[a];prev[a]=a;
+  for(let h=0;h<q.length;h++)for(const n of nb(q[h])){
+    if(prev[n]!==-1||!passable(n,net))continue;prev[n]=q[h];
+    if(n===b){const p=[];for(let k=b;k!==a;k=prev[k])p.push(k);return p.reverse()}
+    q.push(n);
+  }
+  return null;
+}
+function stepVehicle(v,dd){
+  const k=VK[v.kind];
+  if(v.state==='load'){v.wait-=dd;if(v.wait<=0){v.cur^=1;v.state='go';v.path=null}return}
+  const tgt=byId(S.sts,v.ord[v.cur]);
+  if(!tgt){v.state='lost';return}
+  if(!v.path){
+    if(v.state==='lost'&&(v.retry-=dd)>0)return;
+    v.path=findPath(v.tile,tgt.y*W+tgt.x,k.net);v.prog=0;
+    if(!v.path){if(v.state!=='lost')toast(`${v.name}: нет пути до ${tgt.name}`);v.state='lost';v.retry=3;return}
+    v.state='go';
+  }
+  v.prog+=k.spd*dd;
+  while(v.prog>=1&&v.path.length){
+    if(!passable(v.path[0],k.net)){v.path=null;return}
+    v.hist.unshift(v.tile);v.hist.length=Math.min(v.hist.length,4);
+    v.tile=v.path.shift();v.prog-=1;
+  }
+  if(!v.path.length)arrive(v,tgt);
+}
+function arrive(v,st){
+  const k=VK[v.kind];
+  if(v.load>0&&v.from!==st.id&&accepts(st,v.ct)){
+    const fs=byId(S.sts,v.from),dist=fs?Math.abs(fs.x-st.x)+Math.abs(fs.y-st.y):0;
+    const days=S.day-v.loadDay,tf=Math.max(.35,1-Math.max(0,days-dist/k.spd-8)/90);
+    const pay=Math.round(v.load*CARGO[v.ct].rate*dist*tf/6);
+    S.money+=pay;S.year.inc+=pay;v.profit+=pay;
+    floats.push({x:st.x+.5,y:st.y,t:0,txt:'+'+fmt(pay)});
+    const town=byId(S.towns,st.town);
+    if(v.ct===3&&town)town.goods+=v.load;
+    if(v.ct===2)catchment(st,i=>{if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&o.type==='saw'&&v.load){o.stock+=v.load;v.load=0}}});
+    v.load=0;
+  }
+  if(!(st.served&(1<<v.ct))){st.served|=1<<v.ct;recalcRates()}
+  const take=Math.floor(Math.min(k.cap-v.load,st.cargo[v.ct]));
+  if(take>0){
+    if(!v.load){v.from=st.id;v.loadDay=S.day}
+    st.cargo[v.ct]-=take;v.load+=take;
+    if(v.ct===0){const t=byId(S.towns,st.town);if(t)t.pass+=take}
+  }
+  v.state='load';v.wait=2;v.path=null;v.prog=0;
+}
+
+// ---------- building ----------
+function spend(c,i){
+  if(S.money<c){toast('Недостаточно денег');return false}
+  S.money-=c;S.year.exp+=c;
+  if(c>=100)floats.push({x:i%W+.5,y:i/W|0,t:0,txt:'−'+fmt(c),neg:1});
+  return true;
+}
+function build(i,type){
+  const m=S.map[i],other=type===ROAD?RAIL:ROAD;
+  if(m===type||m===ST||m===CROSS)return;
+  if(m!==G&&m!==TREE&&m!==other)return toast('Здесь нельзя строить');
+  if(!spend(COST[type===ROAD?'road':'rail']+(m===TREE?COST.tree:0),i))return;
+  S.map[i]=m===other?CROSS:type;
+}
+function placeStation(i){
+  const m=S.map[i];
+  if(![G,TREE,ROAD,RAIL].includes(m))return toast('Станцию можно ставить на пустую землю, дорогу или путь');
+  if(!spend(COST.st,i))return;
+  const x=i%W,y=i/W|0;
+  const town=S.towns.reduce((b,t)=>Math.hypot(t.x-x,t.y-y)<Math.hypot(b.x-x,b.y-y)?t:b);
+  const n=S.sts.filter(s=>s.town===town.id).length;
+  const st={id:S.nid++,x,y,town:town.id,name:town.name+(n?'-'+(n+1):''),cargo:[0,0,0,0],rate:[0,0,0,0],served:0};
+  S.sts.push(st);S.map[i]=ST;S.own[i]=st.id;recalcRates();
+}
+function bulldoze(i){
+  const m=S.map[i];
+  if(m===WATER||m===G)return;
+  if(m===IND)return toast('Предприятия снести нельзя');
+  if(m===ST){
+    const id=S.own[i];
+    if(S.vs.some(v=>v.ord.includes(id)))return toast('Станцию использует транспорт — сначала продайте его');
+    if(!spend(COST.clear*5,i))return;
+    S.sts=S.sts.filter(s=>s.id!==id);recalcRates();if(sel&&sel.id===id)sel=null;
+  }else if(!spend(m===HOUSE?COST.house:m===TREE?COST.tree:COST.clear,i))return;
+  S.map[i]=G;S.own[i]=-1;S.lvl[i]=0;
+}
+function buyVehicle(a,b){
+  const kind=$('#vkind').value,k=VK[kind],ct=+$('#vcargo').value;
+  if(!findPath(a.y*W+a.x,b.y*W+b.x,k.net))return toast(`Между станциями нет ${k.net==='rail'?'ж/д пути':'дороги'}`);
+  if(!spend(k.cost,a.y*W+a.x))return;
+  const v={id:S.nid++,kind,ct,name:`${k.n} №${S.vs.length+1}`,ord:[a.id,b.id],cur:0,tile:a.y*W+a.x,hist:[],path:null,prog:0,
+           state:'load',wait:0,load:0,from:a.id,loadDay:S.day,profit:0,lastProfit:0};
+  S.vs.push(v);arrive(v,a);sel={t:'v',id:v.id};
+  toast(`Куплен ${v.name}: ${a.name} ⇄ ${b.name}`);
+}
+function sellVehicle(id){const v=byId(S.vs,id);if(!v)return;S.money+=VK[v.kind].cost*.5;S.vs=S.vs.filter(o=>o!==v);sel=null;if(follow===id)follow=null}
+
+// ---------- input ----------
+let ptr=null;
+const tileXY=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left-r.width/2)/cam.z+cam.x,(e.clientY-r.top-r.height/2)/cam.z+cam.y]};
+const tileAt=e=>{const[x,y]=tileXY(e).map(Math.floor);return inb(x,y)?y*W+x:-1};
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId);
+  const pan=e.button!==0||tool==='info';
+  ptr={pan,sx:e.clientX,sy:e.clientY,cx:cam.x,cy:cam.y,moved:false,last:-1};
+  if(!pan)act(tileAt(e),ptr);
+});
+cv.addEventListener('pointermove',e=>{
+  hover=tileAt(e);
+  if(!ptr)return;
+  if(Math.abs(e.clientX-ptr.sx)+Math.abs(e.clientY-ptr.sy)>4)ptr.moved=true;
+  if(ptr.pan){if(ptr.moved){follow=null;cam.x=ptr.cx-(e.clientX-ptr.sx)/cam.z;cam.y=ptr.cy-(e.clientY-ptr.sy)/cam.z}return}
+  if(['road','rail','bull'].includes(tool)&&hover>=0&&ptr.last>=0){
+    // walk tile-by-tile so fast drags leave no gaps
+    let x=ptr.last%W,y=ptr.last/W|0;const tx=hover%W,ty=hover/W|0;
+    while(x!==tx||y!==ty){if(x!==tx)x+=Math.sign(tx-x);else y+=Math.sign(ty-y);act(y*W+x,ptr)}
+  }
+});
+cv.addEventListener('pointerup',e=>{if(ptr&&ptr.pan&&!ptr.moved&&e.button===0)infoClick(e);ptr=null});
+cv.addEventListener('wheel',e=>{e.preventDefault();const[bx,by]=tileXY(e);cam.z=Math.max(8,Math.min(64,cam.z*(e.deltaY<0?1.15:1/1.15)));const[ax,ay]=tileXY(e);cam.x+=bx-ax;cam.y+=by-ay},{passive:false});
+function act(i,p){
+  if(i<0)return;p.last=i;
+  if(tool==='road')build(i,ROAD);
+  else if(tool==='rail')build(i,RAIL);
+  else if(tool==='bull')bulldoze(i);
+  else if(tool==='st')placeStation(i);
+  else if(tool==='veh'){
+    if(S.map[i]!==ST)return toast('Нажмите на станцию');
+    const st=byId(S.sts,S.own[i]);
+    if(!vA)vA=st;else if(vA!==st){buyVehicle(vA,st);vA=null}
+    vehHint();
+  }
+}
+function infoClick(e){
+  const[px,py]=tileXY(e);
+  const v=S.vs.find(v=>{const p=vpos(v);return Math.hypot(p.x-px,p.y-py)<.6});
+  if(v){sel={t:'v',id:v.id};return}
+  const i=tileAt(e);if(i<0)return;const m=S.map[i];
+  if(m===ST)sel={t:'st',id:S.own[i]};
+  else if(m===IND)sel={t:'ind',id:S.own[i]};
+  else{const x=i%W,y=i/W|0,t=S.towns.find(t=>Math.abs(t.x-x)<=t.rad&&Math.abs(t.y-y)<=t.rad);sel=t?{t:'town',id:t.id}:null}
+}
+const keys={};
+addEventListener('keydown',e=>{
+  if(e.target.tagName==='SELECT')return;
+  keys[e.key.toLowerCase()]=1;
+  const n=+e.key;if(n>=1&&n<=6)setTool(['info','road','rail','st','bull','veh'][n-1]);
+  if(e.key===' '){e.preventDefault();setSpeed(speed?0:1)}
+  if(e.key==='Escape'){vA=null;setTool('info')}
+});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=0);
+
+function setTool(t){tool=t;vA=null;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));$('#vehopts').hidden=t!=='veh';cv.style.cursor=t==='info'?'grab':'crosshair';vehHint()}
+function setSpeed(s){speed=s;document.querySelectorAll('[data-sp]').forEach(b=>b.classList.toggle('on',+b.dataset.sp===s))}
+$('#tools').onclick=e=>{const t=e.target.dataset.tool;if(t)setTool(t)};
+$('#speed').onclick=e=>{const s=e.target.dataset.sp;if(s!==undefined)setSpeed(+s)};
+$('#lplus').onclick=()=>{if(S.loan>=300000)return toast('Максимальный кредит — 300 000 ₽');S.loan+=10000;S.money+=10000};
+$('#lminus').onclick=()=>{if(S.loan<10000)return;if(S.money<10000)return toast('Недостаточно денег для погашения');S.loan-=10000;S.money-=10000};
+$('#save').onclick=()=>save();
+let newArmed=0;
+$('#new').onclick=()=>{if(Date.now()-newArmed>3000){newArmed=Date.now();$('#new').textContent='Точно? Нажмите ещё';setTimeout(()=>$('#new').textContent='Новая карта',3000);return}
+  $('#new').textContent='Новая карта';newGame();sel=null;follow=null;toast('Новая карта создана')};
+$('#vkind').innerHTML=Object.entries(VK).map(([k,v])=>`<option value="${k}">${v.n} — ${fmt(v.cost)}, ${v.cap} мест</option>`).join('');
+$('#vkind').onchange=()=>{const k=VK[$('#vkind').value];$('#vcargo').innerHTML=k.cargo.map(c=>`<option value="${c}">${CARGO[c].n}</option>`).join('');vehHint()};
+$('#vkind').onchange();
+function vehHint(){const k=VK[$('#vkind').value];$('#vstep').textContent=vA?`Откуда: ${vA.name}. Теперь нажмите станцию назначения.`:`Нажмите станцию отправления (нужна ${k.net==='rail'?'ж/д':'дорожная'} связь).`}
+$('#info').onclick=e=>{const a=e.target.dataset.act;if(!a||!sel)return;
+  if(a==='sell')sellVehicle(sel.id);if(a==='follow')follow=follow===sel.id?null:sel.id;if(a==='go'){const o=selObj();if(o){cam.x=o.x+.5;cam.y=o.y+.5}}};
+$('#vlist').onclick=e=>{const r=e.target.closest('[data-v]');if(!r)return;const id=+r.dataset.v;sel={t:'v',id};follow=id};
+
+// ---------- save ----------
+function serialize(){return JSON.stringify({...S,map:Array.from(S.map),own:Array.from(S.own),lvl:Array.from(S.lvl),vs:S.vs.map(v=>({...v,path:null})),cam})}
+function save(quiet){try{localStorage.setItem('magistral-save',serialize());if(!quiet)toast('Игра сохранена')}catch(e){if(!quiet)toast('Сохранение недоступно в этом браузере')}}
+function load(json){
+  const o=JSON.parse(json);
+  S={...o,map:new Uint8Array(o.map),own:new Int16Array(o.own),lvl:new Uint8Array(o.lvl)};
+  if(o.cam)cam=o.cam;recalcRates();
+}
+
+// ---------- rendering ----------
+const GRASS=['#5d8f3e','#5a8b3b','#61933f'],ROOF=['#b4412f','#8e5a3c','#5f6e7c','#b0782a','#7b3f61'];
+function vpos(v){
+  const a=v.tile,b=v.path&&v.path.length?v.path[0]:a,f=Math.min(1,v.prog||0);
+  return{x:a%W+((b%W)-(a%W))*f+.5,y:(a/W|0)+((b/W|0)-(a/W|0))*f+.5};
+}
+function along(pts,d){
+  for(let k=0;k<pts.length-1;k++){const[x1,y1]=pts[k],[x2,y2]=pts[k+1],L=Math.hypot(x2-x1,y2-y1);
+    if(L>0&&L>=d){const f=d/L;return[x1+(x2-x1)*f,y1+(y2-y1)*f,x1-x2,y1-y2]}d-=L}
+  const l=pts[pts.length-1],p=pts[pts.length-2]||l;return[l[0],l[1],p[0]-l[0],p[1]-l[1]];
+}
+const conn=(i,set)=>{const x=i%W,y=i/W|0;return D4.map(([dx,dy])=>inb(x+dx,y+dy)&&set.includes(S.map[(y+dy)*W+x+dx]))};
+function drawRoad(sx,sy,ts,c){
+  cx.fillStyle='#6b6b68';const w=ts*.56,o=(ts-w)/2;
+  cx.fillRect(sx+o,sy+o,w,w);
+  if(c[0])cx.fillRect(sx+o,sy+o,ts-o,w);if(c[1])cx.fillRect(sx,sy+o,o+w,w);
+  if(c[2])cx.fillRect(sx+o,sy+o,w,ts-o);if(c[3])cx.fillRect(sx+o,sy,w,o+w);
+  if(ts>=22){cx.fillStyle='#d8d2bf';const d=Math.max(1,ts/16);
+    if(c[0]||c[1]){cx.fillRect(sx+(c[1]?0:ts/2),sy+ts/2-d/2,(c[0]&&c[1]?ts:ts/2)*.5,d)}
+    if(c[2]||c[3]){cx.fillRect(sx+ts/2-d/2,sy+(c[3]?0:ts/2),d,(c[2]&&c[3]?ts:ts/2)*.5)}}
+}
+function drawRail(sx,sy,ts,c){
+  if(!c.some(Boolean))c=[1,1,0,0];
+  const cxm=sx+ts/2,cym=sy+ts/2;
+  for(let k=0;k<4;k++){if(!c[k])continue;const[dx,dy]=D4[k],px=-dy,py=dx;
+    cx.fillStyle='#857561';cx.fillRect(Math.min(cxm,cxm+dx*ts/2)-Math.abs(px)*ts*.22,Math.min(cym,cym+dy*ts/2)-Math.abs(py)*ts*.22,Math.abs(dx)*ts/2+Math.abs(px)*ts*.44,Math.abs(dy)*ts/2+Math.abs(py)*ts*.44);
+    cx.fillStyle='#4a3626';for(let s=.1;s<.5;s+=.13){const x=cxm+dx*ts*s,y=cym+dy*ts*s;cx.fillRect(x-Math.abs(px)*ts*.2-Math.abs(dx),y-Math.abs(py)*ts*.2-Math.abs(dy),Math.abs(px)*ts*.4+Math.abs(dx)*2,Math.abs(py)*ts*.4+Math.abs(dy)*2)}
+  }
+  cx.strokeStyle='#cfd3d6';cx.lineWidth=Math.max(1,ts/18);cx.beginPath();
+  for(let k=0;k<4;k++){if(!c[k])continue;const[dx,dy]=D4[k],px=-dy,py=dx;
+    for(const s of[-.11,.11]){cx.moveTo(cxm+px*ts*s,cym+py*ts*s);cx.lineTo(cxm+dx*ts/2+px*ts*s,cym+dy*ts/2+py*ts*s)}}
+  cx.stroke();
+}
+function drawTile(i,sx,sy,ts){
+  const x=i%W,y=i/W|0,m=S.map[i],h=hash(x,y);
+  cx.fillStyle=m===WATER?(h&1?'#3a6aa3':'#3b6ea8'):GRASS[h%3];
+  cx.fillRect(sx,sy,ts+.5,ts+.5);
+  if(m===WATER&&ts>16&&h%5===0){cx.fillStyle='#5d8cc2';cx.fillRect(sx+ts*.3,sy+ts*.4,ts*.3,Math.max(1,ts/20))}
+  if(m===TREE){for(let k=0;k<3;k++){const ox=((h>>(k*4))&15)/15*.6+.2,oy=((h>>(k*4+12))&15)/15*.6+.2;
+    cx.fillStyle='#4a2f1b';cx.fillRect(sx+ox*ts-1,sy+oy*ts,2,ts*.16);
+    cx.fillStyle=k&1?'#2f6a2a':'#275c24';cx.beginPath();cx.arc(sx+ox*ts,sy+oy*ts,ts*.17,0,7);cx.fill()}}
+  else if(m===ROAD)drawRoad(sx,sy,ts,conn(i,[ROAD,ST,CROSS]));
+  else if(m===RAIL)drawRail(sx,sy,ts,conn(i,[RAIL,ST,CROSS]));
+  else if(m===CROSS){drawRoad(sx,sy,ts,conn(i,[ROAD,ST,CROSS]));drawRail(sx,sy,ts,conn(i,[RAIL,ST,CROSS]))}
+  else if(m===ST){
+    const rc=conn(i,[ROAD,CROSS]),tc=conn(i,[RAIL,CROSS]);
+    if(rc.some(Boolean))drawRoad(sx,sy,ts,rc);if(tc.some(Boolean))drawRail(sx,sy,ts,tc);
+    const o=ts*.14;cx.fillStyle='#b9b6ad';cx.fillRect(sx+o,sy+o,ts-2*o,ts-2*o);
+    cx.fillStyle='#3e5f8a';cx.fillRect(sx+o,sy+o,ts-2*o,ts*.22);
+    cx.strokeStyle='#2a2f35';cx.lineWidth=1;cx.strokeRect(sx+o+.5,sy+o+.5,ts-2*o-1,ts-2*o-1);
+  }
+  else if(m===HOUSE){
+    const l=S.lvl[i],s=[0,.5,.66,.8][l]*ts,o=(ts-s)/2,roof=ROOF[h%5];
+    cx.fillStyle='rgba(0,0,0,.25)';cx.fillRect(sx+o+2,sy+o+2,s,s);
+    cx.fillStyle=l===3?'#a9adb3':'#d9cdb2';cx.fillRect(sx+o,sy+o,s,s);
+    if(l<3){cx.fillStyle=roof;cx.fillRect(sx+o,sy+o,s,s*.45)}
+    else{cx.fillStyle='#4d6378';for(let a=0;a<3;a++)for(let b=0;b<3;b++)cx.fillRect(sx+o+s*(.12+a*.3),sy+o+s*(.12+b*.3),s*.16,s*.16)}
+  }
+  else if(m===IND){const o=byId(S.inds,S.own[i]);cx.fillStyle=o?IT[o.type].c:'#555';cx.fillRect(sx,sy,ts+.5,ts+.5)}
+}
+function drawCar(x,y,dx,dy,len,wid,col,off){
+  const a=Math.atan2(dy,dx),ts=cam.z;
+  cx.save();cx.translate(x-Math.sin(a)*off*ts,y+Math.cos(a)*off*ts);cx.rotate(a);
+  cx.fillStyle='rgba(0,0,0,.3)';cx.fillRect(-len*ts/2+1.5,-wid*ts/2+1.5,len*ts,wid*ts);
+  cx.fillStyle=col;cx.fillRect(-len*ts/2,-wid*ts/2,len*ts,wid*ts);
+  cx.fillStyle='rgba(255,255,255,.55)';cx.fillRect(len*ts/2-len*ts*.22,-wid*ts/2+1,len*ts*.15,wid*ts-2);
+  cx.restore();
+}
+let dpr=1;
+function resize(){dpr=devicePixelRatio||1;const r=cv.getBoundingClientRect();cv.width=r.width*dpr;cv.height=r.height*dpr}
+addEventListener('resize',resize);
+function draw(){
+  const w=cv.width/dpr,h=cv.height/dpr,ts=cam.z;
+  cx.setTransform(dpr,0,0,dpr,0,0);
+  cx.fillStyle='#14181c';cx.fillRect(0,0,w,h);
+  const sx=x=>(x-cam.x)*ts+w/2,sy=y=>(y-cam.y)*ts+h/2;
+  const x0=Math.max(0,Math.floor(cam.x-w/2/ts)),x1=Math.min(W-1,Math.ceil(cam.x+w/2/ts)),y0=Math.max(0,Math.floor(cam.y-h/2/ts)),y1=Math.min(H-1,Math.ceil(cam.y+h/2/ts));
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)drawTile(y*W+x,sx(x),sy(y),ts);
+  // industries: emoji + name over the 2x2 block
+  cx.textAlign='center';cx.textBaseline='middle';
+  for(const o of S.inds){if(o.x<x0-2||o.x>x1||o.y<y0-2||o.y>y1)continue;
+    cx.strokeStyle='rgba(0,0,0,.5)';cx.lineWidth=2;cx.strokeRect(sx(o.x)+1,sy(o.y)+1,ts*2-2,ts*2-2);
+    cx.font=`${ts*1.05}px serif`;cx.fillText(IT[o.type].e,sx(o.x+1),sy(o.y+1));
+    if(ts>=18){cx.font=`700 ${Math.max(10,ts*.36)}px ${getComputedStyle(document.body).fontFamily}`;label(IT[o.type].n,sx(o.x+1),sy(o.y)-ts*.3,'#e8dcc0')}}
+  // overlays
+  const sh=sel&&sel.t==='st'?byId(S.sts,sel.id):null;
+  const cat=(x,y,col)=>{cx.fillStyle=col;cx.fillRect(sx(x-R),sy(y-R),ts*(2*R+1),ts*(2*R+1))};
+  if(tool==='st'&&hover>=0)cat(hover%W,hover/W|0,'rgba(227,169,59,.18)');
+  if(sh)cat(sh.x,sh.y,'rgba(120,180,255,.16)');
+  if(vA){cx.strokeStyle='#e3a93b';cx.lineWidth=3;cx.strokeRect(sx(vA.x),sy(vA.y),ts,ts)}
+  // vehicles
+  for(const v of S.vs){
+    const p=vpos(v),pts=[[p.x,p.y],[v.tile%W+.5,(v.tile/W|0)+.5],...v.hist.map(t=>[t%W+.5,(t/W|0)+.5])];
+    if(v.kind==='train'){for(let k=3;k>=0;k--){const[x,y,dx,dy]=along(pts,k*.52);drawCar(sx(x),sy(y),dx||1,dy,.48,.3,k?CARGO[v.ct].c:'#b8322a',0)}}
+    else{const[x,y,dx,dy]=along(pts,0);drawCar(sx(x),sy(y),dx||1,dy,.42,.24,v.kind==='bus'?'#e8b92f':CARGO[v.ct].c,.13)}
+    if(sel&&sel.t==='v'&&sel.id===v.id){cx.strokeStyle='#fff';cx.lineWidth=2;cx.beginPath();cx.arc(sx(p.x),sy(p.y),ts*.55,0,7);cx.stroke()}
+  }
+  // labels
+  const font=getComputedStyle(document.body).fontFamily;
+  for(const st of S.sts){if(ts<16)break;cx.font=`${Math.max(10,ts*.34)}px ${font}`;label(st.name,sx(st.x+.5),sy(st.y)-ts*.15,'#bcd3f0')}
+  for(const t of S.towns){cx.font=`${Math.max(12,ts*.5)}px "Russo One",${font}`;label(`${t.name} · ${t.pop}`,sx(t.x+.5),sy(t.y-1.2),'#fff6dc')}
+  if(hover>=0&&!ptr?.pan){cx.strokeStyle='rgba(255,255,255,.8)';cx.lineWidth=1.5;cx.strokeRect(sx(hover%W)+.5,sy(hover/W|0)+.5,ts-1,ts-1)}
+  for(const f of floats){cx.globalAlpha=Math.max(0,1-f.t/2);cx.font=`700 ${Math.max(11,ts*.42)}px ${font}`;cx.fillStyle=f.neg?'#ff9384':'#a6f08f';cx.fillText(f.txt,sx(f.x),sy(f.y)-f.t*ts*.6);cx.globalAlpha=1}
+}
+function label(txt,x,y,col){const w=cx.measureText(txt).width+10,hh=parseFloat(cx.font.match(/(\d+(\.\d+)?)px/)[1])+6;
+  cx.fillStyle='rgba(18,22,26,.72)';cx.fillRect(x-w/2,y-hh/2,w,hh);cx.fillStyle=col;cx.fillText(txt,x,y+1)}
+
+// ---------- panels ----------
+let toastT;
+function toast(s){const t=$('#toast');t.textContent=s;t.style.opacity=1;clearTimeout(toastT);toastT=setTimeout(()=>t.style.opacity=0,4000)}
+function selObj(){if(!sel)return null;const a={v:S.vs,st:S.sts,town:S.towns,ind:S.inds}[sel.t],o=byId(a,sel.id);
+  if(o&&sel.t==='v'){const p=vpos(o);return{x:p.x-.5,y:p.y-.5}}return o}
+const row=(a,b,cls='')=>`<div class="row"><span>${a}</span><span class="${cls}">${b}</span></div>`;
+function infoHtml(){
+  if(!sel)return 'Нажмите на станцию, город, предприятие или машину.';
+  if(sel.t==='v'){const v=byId(S.vs,sel.id);if(!v)return'—';const a=byId(S.sts,v.ord[0]),b=byId(S.sts,v.ord[1]),k=VK[v.kind];
+    const st={go:'в пути к '+(byId(S.sts,v.ord[v.cur])||{}).name,load:'погрузка',lost:'⚠ нет пути'}[v.state];
+    return `<div class="title">${v.name}</div>`+row('Маршрут',`${a?.name} ⇄ ${b?.name}`)+row('Груз',`<span class="chip" style="background:${CARGO[v.ct].c}"></span>${CARGO[v.ct].n}`)+
+      row('Загрузка',`${v.load} / ${k.cap}`)+row('Состояние',st)+row('Прибыль в этом году',fmt(v.profit),v.profit>=0?'pos':'neg')+row('В прошлом году',fmt(v.lastProfit))+row('Содержание',fmt(k.run)+'/год')+
+      `<div class="grp"><button data-act="follow">${follow===v.id?'Не следить':'Следить'}</button><button data-act="sell">Продать за ${fmt(k.cost/2)}</button></div>`}
+  if(sel.t==='st'){const s=byId(S.sts,sel.id);if(!s)return'—';
+    return `<div class="title">Станция «${s.name}»</div>`+CARGO.map((c,i)=>row(`<span class="chip" style="background:${c.c}"></span>${c.n}`,`${Math.floor(s.cargo[i])} ждут · ${Math.round(s.rate[i]*30)}/мес · ${accepts(s,i)?'принимает':'—'}`)).join('')+
+      `<div>Транспорта на маршрутах: ${S.vs.filter(v=>v.ord.includes(s.id)).length}</div>`}
+  if(sel.t==='town'){const t=byId(S.towns,sel.id);if(!t)return'—';
+    return `<div class="title">${t.name}</div>`+row('Население',t.pop)+row('Домов',t.houses)+row('Пассажиров вывезено (прошл. мес.)',t.lastPass)+row('Товаров доставлено (прошл. мес.)',t.lastGoods)+
+      `<div>Город растёт быстрее, когда вы вывозите пассажиров и привозите товары.</div><button data-act="go">Показать</button>`}
+  if(sel.t==='ind'){const o=byId(S.inds,sel.id);if(!o)return'—';const it=IT[o.type];
+    return `<div class="title">${it.n}</div>`+(it.prod!==undefined?row('Производит',`${CARGO[it.prod].n}: ${o.prod}/мес`):'')+
+      (it.acc.length?row('Принимает',it.acc.map(c=>CARGO[c].n).join(', ')):'')+(o.type==='saw'?row('Сырья в этом месяце',o.stock):'')+`<button data-act="go">Показать</button>`}
+}
+let lastInfo='',lastList='';
+function panels(){
+  $('#date').textContent=date().toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
+  $('#money').textContent=fmt(S.money);$('#money').style.color=S.money<0?'var(--bad)':'';
+  $('#loan').textContent=fmt(S.loan);
+  const ih=infoHtml();if(ih!==lastInfo){$('#info').innerHTML=ih;lastInfo=ih}
+  const lh=S.vs.length?S.vs.map(v=>`<div class="vrow" data-v="${v.id}"><span><span class="chip" style="background:${CARGO[v.ct].c}"></span>${v.name}${v.state==='lost'?' ⚠':''}</span><span class="${v.profit>=0?'pos':'neg'}">${fmt(v.profit)}</span></div>`).join(''):'Пока ничего. Постройте две станции и купите автобус.';
+  if(lh!==lastList){$('#vlist').innerHTML=lh;lastList=lh}
+}
+
+// ---------- loop ----------
+let last=performance.now(),panelT=0;
+function loop(now){
+  const dt=Math.min(100,now-last);last=now;
+  const pan=12*dt/1000*28/cam.z*2;
+  if(keys.w||keys.arrowup)cam.y-=pan;if(keys.s||keys.arrowdown)cam.y+=pan;if(keys.a||keys.arrowleft)cam.x-=pan;if(keys.d||keys.arrowright)cam.x+=pan;
+  const dd=dt/DAY_MS*SPEEDS[speed];
+  if(dd>0){for(const v of S.vs)stepVehicle(v,dd);S.dayF+=dd;while(S.dayF>=1){S.dayF-=1;daily()}}
+  if(follow){const v=byId(S.vs,follow);if(v){const p=vpos(v);cam.x=p.x;cam.y=p.y}else follow=null}
+  for(const f of floats)f.t+=dt/1000;floats=floats.filter(f=>f.t<2);
+  draw();
+  if((panelT+=dt)>250){panelT=0;panels()}
+  requestAnimationFrame(loop);
+}
+
+// self-check: pathfinding respects networks
+(function(){const keep=S;S={map:new Uint8Array(W*H)};for(let x=0;x<5;x++)S.map[x]=ROAD;S.map[2]=CROSS;
+  console.assert(findPath(0,4,'road')?.length===4,'road path');console.assert(findPath(0,4,'rail')===null,'rail blocked');S=keep})();
+
+function start(data){
+  try{const s=data?.save||localStorage.getItem('magistral-save');if(s){load(s);toast('Сохранённая игра загружена')}else newGame()}catch(e){newGame()}
+  if(!S)newGame();
+  window.claude?.hot?.snapshot?.(()=>({save:serialize()}));
+  resize();setTool('info');setSpeed(1);requestAnimationFrame(loop);
+  if(!S.vs.length)toast('Добро пожаловать! Постройте две станции у городов, соедините дорогой и купите автобус.');
+}
+window.claude?.hot?.ready?window.claude.hot.ready(start):start(window.claude?.hot?.data??{});
+</script>
+
+</html>
