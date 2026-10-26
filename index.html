@@ -97,7 +97,8 @@ button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font
         <li>Перетаскивание или ПКМ — двигать карту, колесо — масштаб, WASD — тоже двигать.</li>
         <li>Дороги и пути тянутся мышью. Станция собирает грузы в радиусе 3 клеток (подсветка).</li>
         <li>Груз появляется на станции только после первого визита транспорта за ним.</li>
-        <li>Цепочки: шахта → электростанция, лесозаготовка → лесопилка → товары в город. Пассажиры — между городами.</li>
+        <li>Цепочки: шахта → электростанция; лесозаготовка → лесопилка → товары в город; ферма → пищекомбинат → продукты в город; нефтяная вышка → НПЗ → товары. Пассажиры — между городами.</li>
+        <li>Растущие города сами строят ратушу, фонтан, церковь и стадион — они дают больше пассажиров.</li>
         <li>Доход растёт с расстоянием и падает от долгой дороги. Обслуживаемые города растут быстрее.</li>
       </ul>
     </div>
@@ -109,16 +110,25 @@ button.on{background:var(--accent);color:#1b2026;border-color:var(--accent);font
 const $=s=>document.querySelector(s);
 const cv=$('#c'),cx=cv.getContext('2d');
 const W=96,H=96,R=3,DAY_MS=700,SPEEDS=[0,1,2,4];
-const G=0,WATER=1,TREE=2,ROAD=3,RAIL=4,ST=5,HOUSE=6,IND=7,CROSS=8;
+const G=0,WATER=1,TREE=2,ROAD=3,RAIL=4,ST=5,HOUSE=6,IND=7,CROSS=8,LM=9;
 const HP=[0,8,20,45];
-const CARGO=[{n:'Пассажиры',rate:3.2,c:'#f2cf55'},{n:'Уголь',rate:4.5,c:'#2a2a2a'},{n:'Древесина',rate:4,c:'#9a6431'},{n:'Товары',rate:7,c:'#e07a5f'}];
+const CARGO=[{n:'Пассажиры',rate:3.2,c:'#f2cf55'},{n:'Уголь',rate:4.5,c:'#2a2a2a'},{n:'Древесина',rate:4,c:'#9a6431'},{n:'Товары',rate:7,c:'#e07a5f'},
+             {n:'Зерно',rate:4,c:'#c8a24a'},{n:'Продукты',rate:6,c:'#c94f7c'},{n:'Нефть',rate:4.2,c:'#4a3f6b'}];
+const NC=CARGO.length;
 const VK={bus:{n:'Автобус',cost:1500,run:350,cap:30,spd:2.6,net:'road',cargo:[0]},
-          truck:{n:'Грузовик',cost:2200,run:450,cap:20,spd:2.2,net:'road',cargo:[1,2,3]},
-          train:{n:'Поезд',cost:9000,run:1600,cap:90,spd:4.5,net:'rail',cargo:[0,1,2,3]}};
+          truck:{n:'Грузовик',cost:2200,run:450,cap:20,spd:2.2,net:'road',cargo:[1,2,3,4,5,6]},
+          train:{n:'Поезд',cost:9000,run:1600,cap:90,spd:4.5,net:'rail',cargo:[0,1,2,3,4,5,6]}};
+// industries with both acc and prod are processors: delivered input becomes next month's output
 const IT={coal:{n:'Угольная шахта',c:'#3d3a38',e:'⛏️',prod:1,base:45,acc:[]},
           power:{n:'Электростанция',c:'#8a5a2b',e:'⚡',acc:[1]},
           forest:{n:'Лесозаготовка',c:'#2b5226',e:'🌲',prod:2,base:40,acc:[]},
-          saw:{n:'Лесопилка',c:'#93582c',e:'🪚',prod:3,acc:[2]}};
+          saw:{n:'Лесопилка',c:'#93582c',e:'🪚',prod:3,acc:[2]},
+          farm:{n:'Ферма',c:'#9c8a3c',e:'🌾',prod:4,base:50,acc:[]},
+          food:{n:'Пищекомбинат',c:'#8d4a5e',e:'🏭',prod:5,acc:[4]},
+          oil:{n:'Нефтяная вышка',c:'#2f2b3a',e:'🛢️',prod:6,base:40,acc:[]},
+          refinery:{n:'НПЗ',c:'#5a5560',e:'⚗️',prod:3,acc:[6]}};
+// town landmarks, built automatically once population reaches pop
+const LMS=[{n:'Ратуша',e:'🏛️',pop:0,hp:20},{n:'Фонтан',e:'⛲',pop:200,hp:5},{n:'Церковь',e:'⛪',pop:350,hp:15},{n:'Стадион',e:'🏟️',pop:800,hp:40}];
 const COST={road:15,rail:25,st:120,clear:8,tree:10,house:300};
 const TOWN_NAMES=['Новоград','Берёзовка','Ключи','Светлогорск','Озёрск','Каменка','Рябиново','Сосновка','Заречье'];
 const D4=[[1,0],[-1,0],[0,1],[0,-1]];
@@ -164,9 +174,9 @@ function newGame(seed=Date.now()){
     for(const[dx,dy]of[[0,0],...D4.flatMap(([a,b])=>[1,2,3].map(k=>[a*k,b*k]))]){const i=(y+dy)*W+x+dx;if(land(i))S.map[i]=ROAD}
     for(let k=0;k<30;k++)growTown(t);
   }
-  for(const[type,n]of[['coal',3],['power',2],['forest',3],['saw',2]])for(let k=0,tries=0;k<n&&tries<800;tries++){
+  for(const[type,n]of[['coal',3],['power',2],['forest',2],['saw',2],['farm',3],['food',2],['oil',2],['refinery',1]])for(let k=0,tries=0;k<n&&tries<800;tries++){
     const x=2+(r()*(W-5)|0),y=2+(r()*(H-5)|0),tiles=[0,1,W,W+1].map(o=>y*W+x+o);
-    if(!tiles.every(land)||S.towns.some(t=>Math.abs(t.x-x)+Math.abs(t.y-y)<9)||S.inds.some(o=>Math.abs(o.x-x)+Math.abs(o.y-y)<8))continue;
+    if(!tiles.every(land)||S.towns.some(t=>Math.abs(t.x-x)+Math.abs(t.y-y)<9)||S.inds.some(o=>Math.abs(o.x-x)+Math.abs(o.y-y)<7))continue;
     const ind={id:S.nid++,type,x,y,prod:IT[type].base||0,stock:0};
     for(const i of tiles){S.map[i]=IND;S.own[i]=ind.id}
     S.inds.push(ind);k++;
@@ -176,7 +186,8 @@ function newGame(seed=Date.now()){
 }
 
 function growTown(t){
-  const rad=Math.round(t.rad);
+  const rad=Math.round(t.rad),have=t.lm||(t.lm=[]);
+  const want=LMS.findIndex((l,k)=>t.pop>=l.pop&&!have.includes(k));
   for(let k=0;k<30;k++){
     const x=t.x+Math.round((Math.random()*2-1)*rad),y=t.y+Math.round((Math.random()*2-1)*rad);
     if(!inb(x,y))continue;const i=y*W+x,m=S.map[i];
@@ -184,14 +195,18 @@ function growTown(t){
     if(!land(i))continue;
     const roads=nb(i).filter(j=>S.map[j]===ROAD).length;
     if(!roads)continue;
+    if(want>=0){S.map[i]=LM;S.own[i]=t.id;S.lvl[i]=want;have.push(want);return}
     if(Math.random()<.75){S.map[i]=HOUSE;S.own[i]=t.id;S.lvl[i]=1;return}
     if(roads===1){S.map[i]=ROAD;return}
   }
 }
 
 function townStats(){
-  for(const t of S.towns){t.pop=0;t.houses=0}
-  for(let i=0;i<W*H;i++)if(S.map[i]===HOUSE){const t=byId(S.towns,S.own[i]);if(t){t.pop+=HP[S.lvl[i]];t.houses++}}
+  for(const t of S.towns){t.pop=0;t.houses=0;t.lm=[]}
+  for(let i=0;i<W*H;i++){
+    if(S.map[i]===HOUSE){const t=byId(S.towns,S.own[i]);if(t){t.pop+=HP[S.lvl[i]];t.houses++}}
+    else if(S.map[i]===LM){const t=byId(S.towns,S.own[i]);if(t){t.pop+=LMS[S.lvl[i]].hp;t.lm.push(S.lvl[i])}}
+  }
   for(const t of S.towns)t.rad=Math.min(14,4+Math.sqrt(t.houses)*.9);
 }
 
@@ -199,14 +214,16 @@ function townStats(){
 function catchment(st,f){for(let y=st.y-R;y<=st.y+R;y++)for(let x=st.x-R;x<=st.x+R;x++)if(inb(x,y))f(y*W+x)}
 function accepts(st,ct){
   let houses=0,ok=false;
-  catchment(st,i=>{if(S.map[i]===HOUSE)houses++;else if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&IT[o.type].acc.includes(ct))ok=true}});
-  return ok||(ct===0&&houses>0)||(ct===3&&houses>=4);
+  catchment(st,i=>{if(S.map[i]===HOUSE||S.map[i]===LM)houses++;else if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&IT[o.type].acc.includes(ct))ok=true}});
+  return ok||(ct===0&&houses>0)||((ct===3||ct===5)&&houses>=4);
 }
 // daily cargo per station; sources covered by several served stations split evenly
 function recalcRates(){
   const cov=new Array(W*H);
-  for(const st of S.sts){st.rate=[0,0,0,0];catchment(st,i=>(cov[i]||(cov[i]=[])).push(st))}
-  for(let i=0;i<W*H;i++)if(S.map[i]===HOUSE&&cov[i]){const l=cov[i].filter(s=>s.served&1);for(const s of l)s.rate[0]+=HP[S.lvl[i]]/3/30/l.length}
+  for(const st of S.sts){st.rate=new Array(NC).fill(0);catchment(st,i=>(cov[i]||(cov[i]=[])).push(st))}
+  for(let i=0;i<W*H;i++)if((S.map[i]===HOUSE||S.map[i]===LM)&&cov[i]){
+    const pop=S.map[i]===HOUSE?HP[S.lvl[i]]:LMS[S.lvl[i]].hp,l=cov[i].filter(s=>s.served&1);
+    for(const s of l)s.rate[0]+=pop/3/30/l.length}
   for(const o of S.inds){const ct=IT[o.type].prod;if(ct===undefined)continue;const set=new Set();
     for(const k of[0,1,W,W+1])for(const s of cov[o.y*W+o.x+k]||[])if(s.served&(1<<ct))set.add(s);
     for(const s of set)s.rate[ct]+=o.prod/30/set.size}
@@ -214,7 +231,7 @@ function recalcRates(){
 
 function daily(){
   S.day++;
-  for(const st of S.sts)for(let c=0;c<4;c++)st.cargo[c]=Math.min(3000,st.cargo[c]+st.rate[c]);
+  for(const st of S.sts)for(let c=0;c<NC;c++)st.cargo[c]=Math.min(3000,st.cargo[c]+st.rate[c]);
   const d=date();
   if(d.getDate()===1)monthly(d);
 }
@@ -226,7 +243,7 @@ function monthly(d){
     t.pass=0;t.goods=0;
   }
   for(const o of S.inds){
-    if(o.type==='saw'){o.prod=Math.round(o.stock*.9);o.stock=0}
+    if(IT[o.type].acc.length&&IT[o.type].prod!==undefined){o.prod=Math.round(o.stock*.9);o.stock=0}
     else if(IT[o.type].base)o.prod=Math.round(IT[o.type].base*(.75+Math.random()*.5));
   }
   for(const st of S.sts)st.cargo=st.cargo.map(c=>c*.92);
@@ -288,8 +305,8 @@ function arrive(v,st){
     const c=co(v.p);c.money+=pay;c.year.inc+=pay;v.profit+=pay;
     fx({x:st.x+.5,y:st.y,t:0,txt:'+'+fmt(pay),p:v.p});
     const town=byId(S.towns,st.town);
-    if(v.ct===3&&town)town.goods+=v.load;
-    if(v.ct===2)catchment(st,i=>{if(S.map[i]===IND){const o=byId(S.inds,S.own[i]);if(o&&o.type==='saw'&&v.load){o.stock+=v.load;v.load=0}}});
+    if((v.ct===3||v.ct===5)&&town)town.goods+=v.load;
+    catchment(st,i=>{if(S.map[i]===IND&&v.load){const o=byId(S.inds,S.own[i]),it=o&&IT[o.type];if(it&&it.prod!==undefined&&it.acc.includes(v.ct)){o.stock+=v.load;v.load=0}}});
     v.load=0;
   }
   if(!(st.served&(1<<v.ct))){st.served|=1<<v.ct;recalcRates()}
@@ -327,7 +344,7 @@ function placeStation(i,p){
   const x=i%W,y=i/W|0;
   const town=S.towns.reduce((b,t)=>Math.hypot(t.x-x,t.y-y)<Math.hypot(b.x-x,b.y-y)?t:b);
   const n=S.sts.filter(s=>s.town===town.id).length;
-  const st={id:S.nid++,p,x,y,town:town.id,name:town.name+(n?'-'+(n+1):''),cargo:[0,0,0,0],rate:[0,0,0,0],served:0};
+  const st={id:S.nid++,p,x,y,town:town.id,name:town.name+(n?'-'+(n+1):''),cargo:new Array(NC).fill(0),rate:new Array(NC).fill(0),served:0};
   S.sts.push(st);S.map[i]=ST;S.own[i]=st.id;S.tco[i]=p;recalcRates();
 }
 function bulldoze(i,p){
@@ -340,7 +357,7 @@ function bulldoze(i,p){
     if(S.vs.some(v=>v.ord.includes(id)))return msg(p,'Станцию использует транспорт — сначала продайте его');
     if(!spend(COST.clear*5,i,p))return;
     S.sts=S.sts.filter(s=>s.id!==id);recalcRates();if(sel&&sel.id===id)sel=null;
-  }else if(!spend(m===HOUSE?COST.house:m===TREE?COST.tree:COST.clear,i,p))return;
+  }else if(!spend(m===HOUSE?COST.house:m===LM?COST.house*4:m===TREE?COST.tree:COST.clear,i,p))return;
   S.map[i]=G;S.own[i]=-1;S.lvl[i]=0;S.tco[i]=-1;
 }
 function buyVehicle(aId,bId,kind,ct,p){
@@ -417,6 +434,7 @@ function infoClick(e){
   const i=tileAt(e);if(i<0)return;const m=S.map[i];
   if(m===ST)sel={t:'st',id:S.own[i]};
   else if(m===IND)sel={t:'ind',id:S.own[i]};
+  else if(m===LM||m===HOUSE)sel={t:'town',id:S.own[i]};
   else{const x=i%W,y=i/W|0,t=S.towns.find(t=>Math.abs(t.x-x)<=t.rad&&Math.abs(t.y-y)<=t.rad);sel=t?{t:'town',id:t.id}:null}
 }
 const keys={};
@@ -461,6 +479,7 @@ function load(json){
     S.cos=[{...mkCo(0,myName()),money:o.money,loan:o.loan,year:o.year||{inc:0,exp:0}}];
     for(const x of[...S.vs,...S.sts])x.p=0;
   }
+  for(const s of S.sts)while(s.cargo.length<NC)s.cargo.push(0); // saves from before the new cargo types
   if(o.cam&&!net.role)cam=o.cam;recalcRates();
 }
 
@@ -604,6 +623,8 @@ function drawTile(i,sx,sy,ts){
     else{cx.fillStyle='#4d6378';for(let a=0;a<3;a++)for(let b=0;b<3;b++)cx.fillRect(sx+o+s*(.12+a*.3),sy+o+s*(.12+b*.3),s*.16,s*.16)}
   }
   else if(m===IND){const o=byId(S.inds,S.own[i]);cx.fillStyle=o?IT[o.type].c:'#555';cx.fillRect(sx,sy,ts+.5,ts+.5)}
+  else if(m===LM){const o=ts*.06;cx.fillStyle='#cfc6ad';cx.fillRect(sx+o,sy+o,ts-2*o,ts-2*o);
+    cx.textAlign='center';cx.textBaseline='middle';cx.font=`${ts*.78}px serif`;cx.fillText(LMS[S.lvl[i]].e,sx+ts/2,sy+ts/2+ts*.04)}
 }
 function drawCar(x,y,dx,dy,len,wid,col,off,inner){
   const a=Math.atan2(dy,dx),ts=cam.z;
@@ -672,11 +693,12 @@ function infoHtml(){
     return `<div class="title">Станция «${s.name}»</div>`+row('Владелец',`<span class="chip" style="background:${CO_COLORS[s.p]}"></span>${esc(co(s.p)?.name)}`)+CARGO.map((c,i)=>row(`<span class="chip" style="background:${c.c}"></span>${c.n}`,`${Math.floor(s.cargo[i])} ждут · ${Math.round(s.rate[i]*30)}/мес · ${accepts(s,i)?'принимает':'—'}`)).join('')+
       `<div>Транспорта на маршрутах: ${S.vs.filter(v=>v.ord.includes(s.id)).length}</div>`}
   if(sel.t==='town'){const t=byId(S.towns,sel.id);if(!t)return'—';
-    return `<div class="title">${t.name}</div>`+row('Население',t.pop)+row('Домов',t.houses)+row('Пассажиров вывезено (прошл. мес.)',t.lastPass)+row('Товаров доставлено (прошл. мес.)',t.lastGoods)+
-      `<div>Город растёт быстрее, когда вы вывозите пассажиров и привозите товары.</div><button data-act="go">Показать</button>`}
+    return `<div class="title">${t.name}</div>`+row('Население',t.pop)+row('Домов',t.houses)+row('Достопримечательности',(t.lm||[]).map(k=>LMS[k].e+' '+LMS[k].n).join(', ')||'—')+
+      (LMS.find((l,k)=>!(t.lm||[]).includes(k))?row('Следующая',(l=>`${l.n} при ${l.pop} жит.`)(LMS.find((l,k)=>!(t.lm||[]).includes(k)))):'')+row('Пассажиров вывезено (прошл. мес.)',t.lastPass)+row('Товаров и продуктов (прошл. мес.)',t.lastGoods)+
+      `<div>Город растёт быстрее, когда вы вывозите пассажиров и привозите товары или продукты.</div><button data-act="go">Показать</button>`}
   if(sel.t==='ind'){const o=byId(S.inds,sel.id);if(!o)return'—';const it=IT[o.type];
     return `<div class="title">${it.n}</div>`+(it.prod!==undefined?row('Производит',`${CARGO[it.prod].n}: ${o.prod}/мес`):'')+
-      (it.acc.length?row('Принимает',it.acc.map(c=>CARGO[c].n).join(', ')):'')+(o.type==='saw'?row('Сырья в этом месяце',o.stock):'')+`<button data-act="go">Показать</button>`}
+      (it.acc.length?row('Принимает',it.acc.map(c=>CARGO[c].n).join(', ')):'')+(it.acc.length&&it.prod!==undefined?row('Сырья в этом месяце',o.stock):'')+`<button data-act="go">Показать</button>`}
 }
 let lastInfo='',lastList='',lastPl='';
 function panels(){
